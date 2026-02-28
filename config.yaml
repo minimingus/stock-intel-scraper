@@ -8,3 +8,54 @@ trading:
 markets:
   min_volume_usdc: 1000
   max_markets_to_analyze: 20
+
+twitter:
+  scan_interval_hours: 4
+  daily_brief_hour_utc: 9
+  min_engagement: 5
+  accounts:
+    - AnthropicAI
+    - OpenAI
+    - GoogleDeepMind
+    - cursor_ai
+    - github
+    - vercel
+    - huggingface
+    - LangChainAI
+    - llama_index
+    - mistralai
+    - dario_amodei
+    - sama
+    - ylecun
+    - karpathy
+    - ilyasut
+    - gdb
+    - simonw
+    - swyx
+    - amasad
+    - levelsio
+    - dhh
+    - GregBrockman
+    - wesbos
+    - kentcdodds
+    - t3dotgg
+    - _developit
+    - mjackson
+  keywords_boost:
+    - release
+    - launch
+    - new model
+    - API
+    - open source
+    - benchmark
+    - GPT
+    - Claude
+    - Gemini
+    - Llama
+    - agent
+    - coding
+    - cursor
+    - copilot
+
+signal_feed:
+  lookback_hours: 6

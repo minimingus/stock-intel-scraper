@@ -3,3 +3,6 @@ logs/*.log
 __pycache__/
 *.pyc
 .pytest_cache/
+data/ai_signals.json
+data/seen_tweets.json
+data/twitter_cookies.json
