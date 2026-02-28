@@ -49,4 +49,5 @@ class PolymarketClient:
         return self._clob.post_order(signed, OrderType.FOK)
 
     def get_positions(self) -> list[dict]:
-        return self._clob.get_orders(OpenOrderParams())
+        raw = self._clob.get_orders(OpenOrderParams())
+        return [dict(o) for o in (raw or [])]

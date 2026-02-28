@@ -82,3 +82,16 @@ def test_place_order_executes_when_not_dry_run():
 
     assert result["order_id"] == "ord_1"
     mock_clob.post_order.assert_called_once()
+
+
+def test_get_positions_returns_list_of_dicts():
+    client, mock_clob = _make_client()
+    mock_clob.get_orders.return_value = [
+        {"id": "ord_1", "token_id": "tok_yes", "status": "LIVE"},
+    ]
+
+    positions = client.get_positions()
+
+    assert len(positions) == 1
+    assert positions[0]["id"] == "ord_1"
+    assert isinstance(positions[0], dict)
