@@ -35,7 +35,6 @@ class TwitterIntelStore:
                 extracted_at TEXT NOT NULL
             );
         """)
-        self.conn.commit()
 
     def upsert_expert(self, handle: str, source: str = "seed"):
         self.conn.execute(
@@ -75,7 +74,7 @@ class TwitterIntelStore:
         )
         self.conn.commit()
 
-    def get_signals_for_brief(self, lookback_hours: int = 24) -> list:
+    def get_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
         """Ranked signals: tickers mentioned by most distinct experts in the window."""
         rows = self.conn.execute("""
             SELECT s.ticker, s.asset_type,
@@ -87,8 +86,9 @@ class TwitterIntelStore:
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
             GROUP BY s.ticker, s.asset_type
+            HAVING COUNT(DISTINCT t.handle) >= ?
             ORDER BY expert_count DESC
-        """, (f"-{lookback_hours} hours",)).fetchall()
+        """, (f"-{lookback_hours} hours", min_expert_mentions)).fetchall()
         return [dict(r) for r in rows]
 
     def prune_old_tweets(self, days: int = 7):
@@ -107,3 +107,6 @@ class TwitterIntelStore:
         return self.conn.execute(
             "SELECT COUNT(*) FROM tweets WHERE scraped_at >= datetime('now', '-24 hours')"
         ).fetchone()[0]
+
+    def close(self):
+        self.conn.close()
