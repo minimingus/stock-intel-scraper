@@ -1,5 +1,8 @@
 import json
+import logging
 import anthropic
+
+_log = logging.getLogger(__name__)
 
 _SYSTEM_PROMPT = """\
 You are a professional prediction market analyst on Polymarket.
@@ -47,7 +50,8 @@ class MarketAnalyzer:
                 messages=[{"role": "user", "content": user_msg}],
             )
             data = json.loads(resp.content[0].text)
-        except Exception:
+        except Exception as exc:
+            _log.error("Claude API call failed: %s", exc)
             return []
 
         decisions = []
