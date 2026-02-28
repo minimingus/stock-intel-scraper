@@ -1,0 +1,10 @@
+trading:
+  dry_run: true
+  interval_minutes: 30
+  max_bet_usdc: 5.0
+  max_daily_loss_usdc: 50.0
+  min_confidence: 0.70
+
+markets:
+  min_volume_usdc: 1000
+  max_markets_to_analyze: 20
