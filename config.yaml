@@ -59,3 +59,26 @@ twitter:
 
 signal_feed:
   lookback_hours: 6
+
+twitter_intel:
+  brief_time: "08:00"
+  scrape_interval_hours: 4
+  lookback_hours: 24
+  min_expert_mentions: 2
+
+  auto_expand:
+    enabled: true
+    max_accounts: 100
+    min_interactions: 3
+
+  seed_accounts:
+    - RaoulGMI
+    - CryptoCapo_
+    - tier10k
+    - MacroAlf
+    - TraderSZ
+    - zerohedge
+    - unusual_whales
+    - stockmoe
+    - CryptoBull2020
+    - inversebrah
