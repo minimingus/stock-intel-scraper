@@ -34,6 +34,7 @@ def _extract_tweets_from_page(page: Page) -> list:
                 tweet_id = href.split("/status/")[1].split("/")[0].split("?")[0]
                 break
         if not tweet_id:
+            logger.debug("Could not extract tweet_id for a tweet element, skipping")
             continue
 
         like_el = el.locator('[data-testid="like"] span')
@@ -79,6 +80,7 @@ class TwitterScraper:
                     logger.warning("Failed to scrape @%s: %s", handle, e)
                     return []
                 finally:
+                    context.close()
                     browser.close()
         except Exception as e:
             logger.warning("Playwright error for @%s: %s", handle, e)
