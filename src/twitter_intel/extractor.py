@@ -44,13 +44,17 @@ class SignalExtractor:
         try:
             msg = self.client.messages.create(
                 model="claude-haiku-4-5-20251001",
-                max_tokens=2048,
+                max_tokens=4096,
                 messages=[{
                     "role": "user",
                     "content": _EXTRACTION_PROMPT.format(tweets_json=tweets_json),
                 }],
             )
-            signals = json.loads(msg.content[0].text.strip())
+            raw = msg.content[0].text.strip()
+            # Strip markdown code fences that some LLM responses include
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
+            signals = json.loads(raw)
         except Exception as e:
             logger.error("Signal extraction failed: %s", e)
             return 0
@@ -65,7 +69,7 @@ class SignalExtractor:
                     sentiment=sig["sentiment"],
                 )
                 count += 1
-            except (KeyError, Exception) as e:
+            except Exception as e:
                 logger.warning("Skipping malformed signal %s: %s", sig, e)
         return count
 

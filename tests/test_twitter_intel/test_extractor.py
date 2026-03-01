@@ -76,6 +76,22 @@ def test_extract_batch_empty_input_returns_zero(store):
     assert count == 0
 
 
+def test_extract_batch_handles_markdown_fenced_response(store):
+    """Claude sometimes wraps JSON in markdown fences — must be handled."""
+    fenced = "```json\n" + json.dumps([
+        {"tweet_id": "t1", "ticker": "BTC", "asset_type": "crypto", "sentiment": "bullish"}
+    ]) + "\n```"
+    mock_msg = MagicMock()
+    mock_msg.content = [MagicMock(text=fenced)]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_msg
+    with patch("src.twitter_intel.extractor.Anthropic", return_value=mock_client), \
+         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
+        extractor = SignalExtractor(store)
+        count = extractor.extract_batch([{"tweet_id": "t1", "text": "$BTC bullish"}])
+    assert count == 1
+
+
 def test_run_processes_all_new_tweets(store):
     mock_client = _mock_claude([
         {"tweet_id": "t1", "ticker": "BTC", "asset_type": "crypto", "sentiment": "bullish"}
