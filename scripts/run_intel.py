@@ -25,18 +25,24 @@ def main():
 
     cmd = sys.argv[1]
     cfg = sched.load_config()
-    store, scraper, extractor, discovery, brief = sched.build_components(cfg)
 
-    if cmd == "scrape":
-        sched.scrape_and_extract(store, scraper, extractor, discovery, cfg)
-    elif cmd == "brief":
-        brief.send()
-    elif cmd == "start":
+    if cmd == "start":
+        # run() handles its own component lifecycle
         sched.run()
-    else:
-        print(f"Unknown command: {cmd}")
-        print(__doc__)
-        sys.exit(1)
+        return
+
+    store, scraper, extractor, discovery, brief = sched.build_components(cfg)
+    try:
+        if cmd == "scrape":
+            sched.scrape_and_extract(store, scraper, extractor, discovery, cfg)
+        elif cmd == "brief":
+            brief.send()
+        else:
+            print(f"Unknown command: {cmd}")
+            print(__doc__)
+            sys.exit(1)
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":

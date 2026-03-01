@@ -1,4 +1,6 @@
 import logging
+import signal
+import sys
 
 import yaml
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -65,7 +67,12 @@ def run(config_path: str = "config.yaml"):
 
     interval_hours = intel_cfg.get("scrape_interval_hours", 4)
     brief_time = intel_cfg.get("brief_time", "08:00")
-    brief_hour, brief_minute = map(int, brief_time.split(":"))
+    try:
+        brief_hour, brief_minute = map(int, brief_time.split(":"))
+    except (ValueError, AttributeError) as exc:
+        raise ValueError(
+            f"twitter_intel.brief_time must be in HH:MM format, got: {brief_time!r}"
+        ) from exc
 
     scheduler = BlockingScheduler()
 
@@ -75,6 +82,7 @@ def run(config_path: str = "config.yaml"):
         hours=interval_hours,
         args=[store, scraper, extractor, discovery, cfg],
         id="scrape",
+        misfire_grace_time=3600,
     )
     scheduler.add_job(
         brief.send,
@@ -96,6 +104,16 @@ def run(config_path: str = "config.yaml"):
         brief_time,
         interval_hours,
     )
+
+    def _shutdown(signum, frame):
+        logger.info("Received signal %d, shutting down...", signum)
+        scheduler.shutdown(wait=True)
+        store.close()
+        sys.exit(0)
+
+    signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)
+
     # Immediate first scrape on startup
     scrape_and_extract(store, scraper, extractor, discovery, cfg)
     scheduler.start()
