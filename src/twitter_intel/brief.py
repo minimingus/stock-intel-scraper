@@ -24,7 +24,7 @@ Write a brief with up to 3 entries per section (skip sections with no data):
   🎯 *Polymarket Attention*
 
 For each entry include: the ticker, expert count, dominant sentiment, and a one-line insight.
-Use Telegram Markdown (* bold, _ italic). Start with: 📊 *Daily Trading Brief — {date}*
+Use Telegram HTML formatting (<b>bold</b>, <i>italic</i>). Start with: 📊 <b>Daily Trading Brief — {date}</b>
 Return only the formatted message, no extra commentary."""
 
 
@@ -48,9 +48,9 @@ class BriefGenerator:
 
         if not signals:
             text = (
-                f"📊 *Daily Trading Brief — {date.today().strftime('%b %d, %Y')}*\n\n"
-                f"_No significant signals today "
-                f"(need \u2265{self.min_expert_mentions} expert mentions per asset)._"
+                f"📊 <b>Daily Trading Brief — {date.today().strftime('%b %d, %Y')}</b>\n\n"
+                f"<i>No significant signals today "
+                f"(need \u2265{self.min_expert_mentions} expert mentions per asset).</i>"
             )
         else:
             msg = self.client.messages.create(
@@ -68,24 +68,25 @@ class BriefGenerator:
 
         expert_count = self.store.get_expert_count()
         tweet_count = self.store.get_tweet_count_24h()
-        text += f"\n\n📡 _Monitoring {expert_count} accounts \u00b7 {tweet_count} tweets analyzed_"
+        text += f"\n\n📡 <i>Monitoring {expert_count} accounts \u00b7 {tweet_count} tweets analyzed</i>"
         return text
 
     def send(self):
-        brief = self.generate()
+        brief = None
         try:
+            brief = self.generate()
             token = os.environ["TELEGRAM_BOT_TOKEN"]
             chat_id = os.environ["TELEGRAM_CHAT_ID"]
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": brief, "parse_mode": "Markdown"},
+                json={"chat_id": chat_id, "text": brief, "parse_mode": "HTML"},
                 timeout=10,
             )
             resp.raise_for_status()
             logger.info("Daily brief sent via Telegram (%d chars)", len(brief))
         except Exception as e:
-            logger.error("Telegram send failed: %s — saving to file", e)
+            logger.error("Send failed: %s — saving to file", e)
             path = Path(f"logs/brief-{date.today()}.txt")
             path.parent.mkdir(exist_ok=True)
-            path.write_text(brief)
+            path.write_text(brief or f"Brief generation failed: {e}")
             logger.info("Brief saved to %s", path)

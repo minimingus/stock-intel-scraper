@@ -66,6 +66,10 @@ def test_send_calls_telegram_api(store_with_signals):
         gen.send()
     mock_post.assert_called_once()
     assert "sendMessage" in mock_post.call_args[0][0]
+    call_json = mock_post.call_args.kwargs["json"]
+    assert call_json["parse_mode"] == "HTML"
+    assert call_json["chat_id"] == "123"
+    assert "text" in call_json
 
 
 def test_send_saves_fallback_file_on_telegram_failure(store_with_signals, tmp_path, monkeypatch):
