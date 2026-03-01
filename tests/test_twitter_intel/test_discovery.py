@@ -55,3 +55,25 @@ def test_run_adds_discovered_experts_to_store(store):
     added = discovery.run(tweets)
     assert added == 1
     assert "discovered_expert" in store.get_active_experts()
+
+
+def test_discover_counts_handle_once_per_tweet(store):
+    """A handle mentioned 3 times in one tweet should count as 1, not 3."""
+    tweets = [
+        {"tweet_id": "t1", "text": "@newexpert @newexpert @newexpert mentioned thrice"},
+    ]
+    discovery = ExpertDiscovery(store, max_accounts=100, min_interactions=2)
+    new = discovery.discover_from_tweets(tweets)
+    # count is 1 (one tweet), threshold is 2 => should NOT be discovered
+    assert "newexpert" not in new
+
+
+def test_discover_handles_with_underscores_and_digits(store):
+    """Regex must match real-world handles like @CryptoCapo_ and @tier10k."""
+    tweets = [
+        {"tweet_id": f"t{i}", "text": "@CryptoCapo_ and @tier10k are bullish"} for i in range(3)
+    ]
+    discovery = ExpertDiscovery(store, max_accounts=100, min_interactions=3)
+    new = discovery.discover_from_tweets(tweets)
+    assert "cryptocapo_" in new
+    assert "tier10k" in new

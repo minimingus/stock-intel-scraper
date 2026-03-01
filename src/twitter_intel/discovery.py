@@ -20,9 +20,10 @@ class ExpertDiscovery:
 
         mention_counts: Counter = Counter()
         for tweet in tweets:
-            for handle in re.findall(r"@(\w+)", tweet.get("text", "")):
-                if handle.lower() not in existing:
-                    mention_counts[handle.lower()] += 1
+            seen_in_tweet = {h.lower() for h in re.findall(r"@(\w+)", tweet.get("text", ""))}
+            for handle in seen_in_tweet:
+                if handle not in existing:
+                    mention_counts[handle] += 1
 
         new_handles = []
         for handle, count in mention_counts.most_common():
