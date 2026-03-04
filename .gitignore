@@ -6,3 +6,5 @@ __pycache__/
 data/ai_signals.json
 data/seen_tweets.json
 data/twitter_cookies.json
+data/twitter_intel.db
+logs/brief-*.txt
