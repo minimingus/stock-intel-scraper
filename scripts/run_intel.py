@@ -1,3 +1,4 @@
+#!/usr/bin/env -S .venv/bin/python3
 """
 Manual trigger for Twitter Intel.
 
