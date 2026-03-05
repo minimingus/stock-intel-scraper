@@ -1,0 +1,37 @@
+name: Daily Trading Brief
+
+on:
+  schedule:
+    - cron: "0 8 * * *"   # 8am UTC daily
+    - cron: "0 14 * * *"  # 2pm UTC daily
+    - cron: "0 20 * * *"  # 8pm UTC daily
+  workflow_dispatch:        # manual trigger
+
+jobs:
+  brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install chromium --with-deps
+
+      - name: Scrape experts
+        run: python scripts/run_intel.py scrape
+
+      - name: Send brief
+        run: python scripts/run_intel.py brief
