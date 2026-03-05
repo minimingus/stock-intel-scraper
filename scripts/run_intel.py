@@ -3,9 +3,11 @@
 Manual trigger for Twitter Intel.
 
 Usage:
-    python scripts/run_intel.py scrape    # scrape + extract signals now
-    python scripts/run_intel.py brief     # generate + send brief now
-    python scripts/run_intel.py start     # start the scheduler (blocking)
+    python scripts/run_intel.py scrape              # scrape + extract signals now
+    python scripts/run_intel.py brief               # generate + send brief now
+    python scripts/run_intel.py start               # start the scheduler (blocking)
+    python scripts/run_intel.py backfill            # deep-scrape all new experts
+    python scripts/run_intel.py backfill handle1,handle2  # deep-scrape specific handles
 """
 import logging
 import sys
@@ -28,7 +30,6 @@ def main():
     cfg = sched.load_config()
 
     if cmd == "start":
-        # run() handles its own component lifecycle
         sched.run()
         return
 
@@ -38,6 +39,11 @@ def main():
             sched.scrape_and_extract(store, scraper, extractor, discovery, cfg)
         elif cmd == "brief":
             brief.send()
+        elif cmd == "backfill":
+            handles = None
+            if len(sys.argv) > 2 and sys.argv[2]:
+                handles = [h.strip() for h in sys.argv[2].split(",") if h.strip()]
+            sched.backfill_experts(store, scraper, extractor, handles)
         else:
             print(f"Unknown command: {cmd}")
             print(__doc__)

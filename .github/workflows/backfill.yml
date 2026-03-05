@@ -1,20 +1,17 @@
-name: Daily Trading Brief
+name: Backfill New Experts
 
 on:
-  schedule:
-    - cron: "0 8 * * *"   # 8am UTC daily
-    - cron: "0 14 * * *"  # 2pm UTC daily
-    - cron: "0 20 * * *"  # 8pm UTC daily
   workflow_dispatch:
+    inputs:
+      handles:
+        description: "Comma-separated handles to backfill (leave empty for all new experts)"
+        required: false
+        default: ""
 
 jobs:
-  brief:
+  backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
-
-    env:
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+    timeout-minutes: 120
 
     steps:
       - uses: actions/checkout@v4
@@ -37,11 +34,8 @@ jobs:
           key: db-${{ github.run_id }}
           restore-keys: db-
 
-      - name: Scrape experts
-        run: python scripts/run_intel.py scrape
-
-      - name: Send brief
-        run: python scripts/run_intel.py brief
+      - name: Backfill experts
+        run: python scripts/run_intel.py backfill "${{ github.event.inputs.handles }}"
 
       - name: Save database
         if: always()

@@ -3,7 +3,7 @@ from playwright.sync_api import sync_playwright, Page
 
 logger = logging.getLogger(__name__)
 
-_SCROLL_ROUNDS = 8       # scroll rounds per account to load historical tweets
+_SCROLL_ROUNDS = 4       # scroll rounds per account (~30-40 tweets)
 _SCROLL_PAUSE_MS = 1500  # ms to wait after each scroll
 
 
