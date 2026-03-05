@@ -7,69 +7,93 @@ from .store import TwitterIntelStore
 
 logger = logging.getLogger(__name__)
 
-_price_cache: dict = {}
+# Cache: (symbol, date_str) -> hourly history DataFrame
+_hist_cache: dict = {}
 
 
-def _fetch_change_pct(ticker: str, asset_type: str, hours: int = 24) -> float | None:
-    """Return % price change over last `hours`. Positive = up. None if unavailable."""
-    cache_key = (ticker, asset_type, hours)
-    if cache_key in _price_cache:
-        return _price_cache[cache_key]
+def _get_price_at(symbol: str, at: datetime) -> float | None:
+    """Return closing price for `symbol` at the given UTC datetime."""
+    date_key = at.strftime("%Y-%m-%d")
+    cache_key = (symbol, date_key)
 
-    symbol = f"{ticker}-USD" if asset_type == "crypto" else ticker
+    if cache_key not in _hist_cache:
+        try:
+            _hist_cache[cache_key] = yf.Ticker(symbol).history(
+                period="8d", interval="1h", auto_adjust=True
+            )
+        except Exception as e:
+            logger.debug("History fetch failed for %s: %s", symbol, e)
+            _hist_cache[cache_key] = None
+
+    hist = _hist_cache[cache_key]
+    if hist is None or hist.empty:
+        return None
+
+    # Find the nearest bar at or before `at`
     try:
-        days = max(2, hours // 24 + 2)
-        hist = yf.Ticker(symbol).history(period=f"{days}d", interval="1h", auto_adjust=True)
-        if len(hist) < 2:
-            _price_cache[cache_key] = None
-            return None
-
-        price_now = float(hist["Close"].iloc[-1])
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
-        past = hist[hist.index.tz_convert("UTC") <= cutoff]
+        hist_utc = hist.copy()
+        hist_utc.index = hist_utc.index.tz_convert("UTC")
+        past = hist_utc[hist_utc.index <= at]
         if past.empty:
-            past = hist.iloc[:1]
-        price_then = float(past["Close"].iloc[-1])
-        result = (price_now - price_then) / price_then * 100 if price_then else None
+            return None
+        return float(past["Close"].iloc[-1])
     except Exception as e:
-        logger.debug("Price fetch failed for %s: %s", symbol, e)
-        result = None
+        logger.debug("Price lookup error for %s at %s: %s", symbol, at, e)
+        return None
 
-    _price_cache[cache_key] = result
-    return result
+
+def _symbol(ticker: str, asset_type: str) -> str:
+    return f"{ticker}-USD" if asset_type == "crypto" else ticker
 
 
 class ExpertScorer:
     def __init__(self, store: TwitterIntelStore, lookback_hours: int = 168):
         self.store = store
-        self.lookback_hours = lookback_hours  # default 7 days
+        self.lookback_hours = lookback_hours
 
     def score(self) -> list[dict]:
         """
-        Score experts by prediction accuracy.
+        Score each expert by comparing price at tweet time vs price 24h later.
+        A bullish signal is a HIT if price rose at least 0.5% within 24h of posting.
+        Only experts with >= 3 scored signals are ranked.
         Returns list of {handle, hit_rate, hits, total} sorted by hit_rate desc.
-        Only includes experts with >= 2 scored signals.
         """
         signals = self.store.get_signals_with_handles(self.lookback_hours)
         if not signals:
             return []
 
+        now = datetime.now(timezone.utc)
         scores: dict[str, dict] = {}
-        seen_ticker_prices: dict = {}
 
         for sig in signals:
+            handle = sig["handle"]
             ticker = sig["ticker"]
             asset_type = sig["asset_type"]
-            handle = sig["handle"]
+            scraped_at = sig["scraped_at"]
 
-            if ticker not in seen_ticker_prices:
-                seen_ticker_prices[ticker] = _fetch_change_pct(ticker, asset_type, hours=24)
-            change = seen_ticker_prices[ticker]
-
-            if change is None:
+            # Parse signal time
+            try:
+                post_time = datetime.fromisoformat(scraped_at)
+                if post_time.tzinfo is None:
+                    post_time = post_time.replace(tzinfo=timezone.utc)
+            except Exception:
                 continue
 
-            hit = change > 0  # bullish signal was correct if price went up
+            # Need at least 24h to have elapsed since the post
+            check_time = post_time + timedelta(hours=24)
+            if check_time > now:
+                continue  # too recent to score
+
+            sym = _symbol(ticker, asset_type)
+            price_at_post = _get_price_at(sym, post_time)
+            price_24h_later = _get_price_at(sym, check_time)
+
+            if price_at_post is None or price_24h_later is None or price_at_post == 0:
+                continue
+
+            change_pct = (price_24h_later - price_at_post) / price_at_post * 100
+            hit = change_pct >= 0.5  # bullish signal correct if price up >= 0.5%
+
             entry = scores.setdefault(handle, {"hits": 0, "total": 0})
             entry["total"] += 1
             if hit:
@@ -83,6 +107,6 @@ class ExpertScorer:
                 "total": v["total"],
             }
             for h, v in scores.items()
-            if v["total"] >= 2
+            if v["total"] >= 3
         ]
         return sorted(result, key=lambda x: x["hit_rate"], reverse=True)

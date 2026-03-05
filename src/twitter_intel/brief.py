@@ -55,7 +55,7 @@ def _build_brief(signals: list, min_expert_mentions: int, expert_scores: list) -
 
     # Expert accuracy ranking
     if expert_scores:
-        lines.append("🏆 <b>Expert Accuracy (24h)</b>")
+        lines.append("🏆 <b>Expert Accuracy</b> <i>(price 24h after post)</i>")
         for e in expert_scores[:5]:
             pct = int(e["hit_rate"] * 100)
             bar = "▓" * (pct // 10) + "░" * (10 - pct // 10)

@@ -34,7 +34,7 @@ def build_components(cfg: dict):
         max_accounts=intel_cfg.get("auto_expand", {}).get("max_accounts", 100),
         min_interactions=intel_cfg.get("auto_expand", {}).get("min_interactions", 3),
     )
-    scorer = ExpertScorer(store, lookback_hours=intel_cfg.get("lookback_hours", 24))
+    scorer = ExpertScorer(store, lookback_hours=168)  # score signals from last 7 days
     brief = BriefGenerator(
         store,
         lookback_hours=intel_cfg.get("lookback_hours", 24),

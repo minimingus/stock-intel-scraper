@@ -102,9 +102,9 @@ class TwitterIntelStore:
         return [dict(r) for r in rows]
 
     def get_signals_with_handles(self, lookback_hours: int = 168) -> list:
-        """Return bullish signals with the expert handle that posted them."""
+        """Return bullish signals with expert handle and tweet timestamp."""
         rows = self.conn.execute("""
-            SELECT s.ticker, s.asset_type, t.handle
+            SELECT s.ticker, s.asset_type, t.handle, t.scraped_at
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
