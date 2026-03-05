@@ -64,7 +64,7 @@ twitter_intel:
   brief_time: "08:00"
   scrape_interval_hours: 4
   lookback_hours: 24
-  min_expert_mentions: 2
+  min_expert_mentions: 1
 
   auto_expand:
     enabled: true
@@ -82,3 +82,23 @@ twitter_intel:
     - stockmoe
     - CryptoBull2020
     - inversebrah
+    - AsafNaamani
+    - CryptoCred
+    - TechDev_52
+    - rektcapital
+    - SmartContracter
+    - Pentoshi
+    - CryptoHayes
+    - IncomeSharks
+    - trader1sz
+    - MuroCrypto
+    - OptionsHawk
+    - MarketCurrents
+    - TradingView
+    - StockMKTNewz
+    - traderstewie
+    - Quentinsisco
+    - ukarlewitz
+    - allstarcharts
+    - UrbanKaoboy
+    - Convertbond

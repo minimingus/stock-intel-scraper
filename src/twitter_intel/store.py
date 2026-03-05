@@ -85,6 +85,7 @@ class TwitterIntelStore:
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
+              AND s.sentiment = 'bullish'
             GROUP BY s.ticker, s.asset_type
             HAVING COUNT(DISTINCT t.handle) >= ?
             ORDER BY expert_count DESC

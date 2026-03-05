@@ -1,31 +1,54 @@
-import json
 import logging
 import os
 from datetime import date
 from pathlib import Path
 
 import requests
-from anthropic import Anthropic
 
 from .store import TwitterIntelStore
 
 logger = logging.getLogger(__name__)
 
-_SYNTHESIS_PROMPT = """\
-You are a professional trading analyst. Based on these signals from expert traders on Twitter \
-(ranked by number of distinct experts who mentioned each asset), write a concise daily trading brief.
+_SECTION_ICONS = {
+    "stock": "🏦",
+    "crypto": "🪙",
+    "polymarket": "🎯",
+}
+_SECTION_LABELS = {
+    "stock": "Stocks to Watch",
+    "crypto": "Crypto Signals",
+    "polymarket": "Polymarket Attention",
+}
 
-Signals:
-{signals_json}
 
-Write a brief with up to 3 entries per section (skip sections with no data):
-  🏦 *Stocks to Watch*
-  🪙 *Crypto Signals*
-  🎯 *Polymarket Attention*
+def _build_brief(signals: list, min_expert_mentions: int) -> str:
+    today = date.today().strftime("%b %d, %Y")
+    lines = [f"📊 <b>Daily Trading Brief — {today}</b>\n"]
 
-For each entry include: the ticker, expert count, dominant sentiment, and a one-line insight.
-Use Telegram HTML formatting (<b>bold</b>, <i>italic</i>). Start with: 📊 <b>Daily Trading Brief — {date}</b>
-Return only the formatted message, no extra commentary."""
+    by_type: dict[str, list] = {}
+    for s in signals:
+        by_type.setdefault(s["asset_type"], []).append(s)
+
+    for asset_type in ("stock", "crypto", "polymarket"):
+        items = by_type.get(asset_type, [])[:3]
+        if not items:
+            continue
+        icon = _SECTION_ICONS[asset_type]
+        label = _SECTION_LABELS[asset_type]
+        lines.append(f"{icon} <b>{label}</b>")
+        for s in items:
+            lines.append(
+                f"  🟢 <b>${s['ticker']}</b> — {s['expert_count']} expert(s)"
+            )
+        lines.append("")
+
+    if len(lines) == 1:
+        lines.append(
+            f"<i>No significant signals today "
+            f"(need \u2265{min_expert_mentions} expert mentions per asset).</i>"
+        )
+
+    return "\n".join(lines)
 
 
 class BriefGenerator:
@@ -38,7 +61,6 @@ class BriefGenerator:
         self.store = store
         self.lookback_hours = lookback_hours
         self.min_expert_mentions = min_expert_mentions
-        self.client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     def generate(self) -> str:
         signals = self.store.get_signals_for_brief(
@@ -46,25 +68,7 @@ class BriefGenerator:
             min_expert_mentions=self.min_expert_mentions,
         )
 
-        if not signals:
-            text = (
-                f"📊 <b>Daily Trading Brief — {date.today().strftime('%b %d, %Y')}</b>\n\n"
-                f"<i>No significant signals today "
-                f"(need \u2265{self.min_expert_mentions} expert mentions per asset).</i>"
-            )
-        else:
-            msg = self.client.messages.create(
-                model="claude-sonnet-4-6",
-                max_tokens=1024,
-                messages=[{
-                    "role": "user",
-                    "content": _SYNTHESIS_PROMPT.format(
-                        signals_json=json.dumps(signals, ensure_ascii=False, indent=2),
-                        date=date.today().strftime("%b %d, %Y"),
-                    ),
-                }],
-            )
-            text = msg.content[0].text.strip()
+        text = _build_brief(signals, self.min_expert_mentions)
 
         expert_count = self.store.get_expert_count()
         tweet_count = self.store.get_tweet_count_24h()
