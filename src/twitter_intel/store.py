@@ -32,9 +32,16 @@ class TwitterIntelStore:
                 ticker       TEXT NOT NULL,
                 asset_type   TEXT NOT NULL,
                 sentiment    TEXT NOT NULL,
+                trade_type   TEXT NOT NULL DEFAULT 'day',
                 extracted_at TEXT NOT NULL
             );
         """)
+        # Migrate existing DBs that lack trade_type column
+        try:
+            self.conn.execute("ALTER TABLE signals ADD COLUMN trade_type TEXT NOT NULL DEFAULT 'day'")
+            self.conn.commit()
+        except Exception:
+            pass  # column already exists
 
     def upsert_expert(self, handle: str, source: str = "seed"):
         self.conn.execute(
@@ -66,11 +73,11 @@ class TwitterIntelStore:
         """).fetchall()
         return [dict(r) for r in rows]
 
-    def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str):
+    def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str, trade_type: str = "day"):
         self.conn.execute(
-            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, extracted_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (tweet_id, ticker, asset_type, sentiment, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (tweet_id, ticker, asset_type, sentiment, trade_type, datetime.now(timezone.utc).isoformat()),
         )
         self.conn.commit()
 
@@ -81,7 +88,9 @@ class TwitterIntelStore:
                    COUNT(DISTINCT t.handle) AS expert_count,
                    GROUP_CONCAT(DISTINCT t.handle) AS experts,
                    SUM(CASE WHEN s.sentiment = 'bullish' THEN 1 ELSE 0 END) AS bullish_count,
-                   SUM(CASE WHEN s.sentiment = 'bearish' THEN 1 ELSE 0 END) AS bearish_count
+                   SUM(CASE WHEN s.sentiment = 'bearish' THEN 1 ELSE 0 END) AS bearish_count,
+                   SUM(CASE WHEN s.trade_type = 'day' THEN 1 ELSE 0 END) AS day_count,
+                   SUM(CASE WHEN s.trade_type = 'swing' THEN 1 ELSE 0 END) AS swing_count
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)

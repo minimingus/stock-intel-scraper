@@ -38,8 +38,11 @@ def _build_brief(signals: list, min_expert_mentions: int) -> str:
         label = _SECTION_LABELS[asset_type]
         lines.append(f"{icon} <b>{label}</b>")
         for s in items:
+            day = s.get("day_count") or 0
+            swing = s.get("swing_count") or 0
+            trade_label = "📅 Day" if day >= swing else "📆 Swing"
             lines.append(
-                f"  🟢 <b>${s['ticker']}</b> — {s['expert_count']} expert(s)"
+                f"  🟢 <b>${s['ticker']}</b> — {s['expert_count']} expert(s) · {trade_label}"
             )
         lines.append("")
 
