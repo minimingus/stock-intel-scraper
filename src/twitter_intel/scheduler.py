@@ -9,6 +9,7 @@ from .brief import BriefGenerator
 from .discovery import ExpertDiscovery
 from .extractor import SignalExtractor
 from .scraper import TwitterScraper
+from .scorer import ExpertScorer
 from .store import TwitterIntelStore
 
 logger = logging.getLogger(__name__)
@@ -33,10 +34,12 @@ def build_components(cfg: dict):
         max_accounts=intel_cfg.get("auto_expand", {}).get("max_accounts", 100),
         min_interactions=intel_cfg.get("auto_expand", {}).get("min_interactions", 3),
     )
+    scorer = ExpertScorer(store, lookback_hours=intel_cfg.get("lookback_hours", 24))
     brief = BriefGenerator(
         store,
         lookback_hours=intel_cfg.get("lookback_hours", 24),
         min_expert_mentions=intel_cfg.get("min_expert_mentions", 2),
+        scorer=scorer,
     )
     return store, scraper, extractor, discovery, brief
 

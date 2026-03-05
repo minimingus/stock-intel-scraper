@@ -101,6 +101,17 @@ class TwitterIntelStore:
         """, (f"-{lookback_hours} hours", min_expert_mentions)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_signals_with_handles(self, lookback_hours: int = 168) -> list:
+        """Return bullish signals with the expert handle that posted them."""
+        rows = self.conn.execute("""
+            SELECT s.ticker, s.asset_type, t.handle
+            FROM signals s
+            JOIN tweets t ON t.tweet_id = s.tweet_id
+            WHERE s.extracted_at >= datetime('now', ?)
+              AND s.sentiment = 'bullish'
+        """, (f"-{lookback_hours} hours",)).fetchall()
+        return [dict(r) for r in rows]
+
     def prune_old_tweets(self, days: int = 7):
         self.conn.execute(
             "DELETE FROM tweets WHERE scraped_at < datetime('now', ?)",

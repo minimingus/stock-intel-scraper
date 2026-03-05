@@ -21,7 +21,7 @@ _SECTION_LABELS = {
 }
 
 
-def _build_brief(signals: list, min_expert_mentions: int) -> str:
+def _build_brief(signals: list, min_expert_mentions: int, expert_scores: list) -> str:
     today = date.today().strftime("%b %d, %Y")
     lines = [f"📊 <b>Daily Trading Brief — {today}</b>\n"]
 
@@ -51,6 +51,18 @@ def _build_brief(signals: list, min_expert_mentions: int) -> str:
             f"<i>No significant signals today "
             f"(need \u2265{min_expert_mentions} expert mentions per asset).</i>"
         )
+        lines.append("")
+
+    # Expert accuracy ranking
+    if expert_scores:
+        lines.append("🏆 <b>Expert Accuracy (24h)</b>")
+        for e in expert_scores[:5]:
+            pct = int(e["hit_rate"] * 100)
+            bar = "▓" * (pct // 10) + "░" * (10 - pct // 10)
+            lines.append(
+                f"  @{e['handle']} {bar} {pct}% ({e['hits']}/{e['total']})"
+            )
+        lines.append("")
 
     return "\n".join(lines)
 
@@ -61,10 +73,12 @@ class BriefGenerator:
         store: TwitterIntelStore,
         lookback_hours: int = 24,
         min_expert_mentions: int = 2,
+        scorer=None,
     ):
         self.store = store
         self.lookback_hours = lookback_hours
         self.min_expert_mentions = min_expert_mentions
+        self.scorer = scorer
 
     def generate(self) -> str:
         signals = self.store.get_signals_for_brief(
@@ -72,11 +86,18 @@ class BriefGenerator:
             min_expert_mentions=self.min_expert_mentions,
         )
 
-        text = _build_brief(signals, self.min_expert_mentions)
+        expert_scores = []
+        if self.scorer:
+            try:
+                expert_scores = self.scorer.score()
+            except Exception as e:
+                logger.warning("Expert scoring failed: %s", e)
+
+        text = _build_brief(signals, self.min_expert_mentions, expert_scores)
 
         expert_count = self.store.get_expert_count()
         tweet_count = self.store.get_tweet_count_24h()
-        text += f"\n\n📡 <i>Monitoring {expert_count} accounts \u00b7 {tweet_count} tweets analyzed</i>"
+        text += f"\n📡 <i>Monitoring {expert_count} accounts · {tweet_count} tweets analyzed</i>"
         return text
 
     def send(self):
