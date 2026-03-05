@@ -29,8 +29,9 @@ def _build_brief(signals: list, min_expert_mentions: int) -> str:
     for s in signals:
         by_type.setdefault(s["asset_type"], []).append(s)
 
+    limits = {"stock": 5, "crypto": 3, "polymarket": 3}
     for asset_type in ("stock", "crypto", "polymarket"):
-        items = by_type.get(asset_type, [])[:3]
+        items = by_type.get(asset_type, [])[:limits[asset_type]]
         if not items:
             continue
         icon = _SECTION_ICONS[asset_type]
