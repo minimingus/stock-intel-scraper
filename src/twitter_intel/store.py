@@ -24,7 +24,8 @@ class TwitterIntelStore:
                 text        TEXT NOT NULL,
                 likes       INTEGER NOT NULL DEFAULT 0,
                 retweets    INTEGER NOT NULL DEFAULT 0,
-                scraped_at  TEXT NOT NULL
+                scraped_at  TEXT NOT NULL,
+                tweet_time  TEXT
             );
             CREATE TABLE IF NOT EXISTS signals (
                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,12 +37,16 @@ class TwitterIntelStore:
                 extracted_at TEXT NOT NULL
             );
         """)
-        # Migrate existing DBs that lack trade_type column
-        try:
-            self.conn.execute("ALTER TABLE signals ADD COLUMN trade_type TEXT NOT NULL DEFAULT 'day'")
-            self.conn.commit()
-        except Exception:
-            pass  # column already exists
+        # Migrate existing DBs
+        for migration in [
+            "ALTER TABLE signals ADD COLUMN trade_type TEXT NOT NULL DEFAULT 'day'",
+            "ALTER TABLE tweets ADD COLUMN tweet_time TEXT",
+        ]:
+            try:
+                self.conn.execute(migration)
+                self.conn.commit()
+            except Exception:
+                pass  # column already exists
 
     def upsert_expert(self, handle: str, source: str = "seed"):
         self.conn.execute(
@@ -56,11 +61,11 @@ class TwitterIntelStore:
         ).fetchall()
         return [r["handle"] for r in rows]
 
-    def insert_tweet(self, tweet_id: str, handle: str, text: str, likes: int, retweets: int):
+    def insert_tweet(self, tweet_id: str, handle: str, text: str, likes: int, retweets: int, tweet_time: str = None):
         self.conn.execute(
-            "INSERT OR IGNORE INTO tweets (tweet_id, handle, text, likes, retweets, scraped_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (tweet_id, handle, text, likes, retweets, datetime.now(timezone.utc).isoformat()),
+            "INSERT OR IGNORE INTO tweets (tweet_id, handle, text, likes, retweets, scraped_at, tweet_time) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (tweet_id, handle, text, likes, retweets, datetime.now(timezone.utc).isoformat(), tweet_time),
         )
         self.conn.commit()
 
@@ -102,9 +107,10 @@ class TwitterIntelStore:
         return [dict(r) for r in rows]
 
     def get_signals_with_handles(self, lookback_hours: int = 168) -> list:
-        """Return bullish signals with expert handle and tweet timestamp."""
+        """Return bullish signals with expert handle and actual tweet timestamp."""
         rows = self.conn.execute("""
-            SELECT s.ticker, s.asset_type, t.handle, t.scraped_at
+            SELECT s.ticker, s.asset_type, t.handle,
+                   COALESCE(t.tweet_time, t.scraped_at) AS post_time
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)

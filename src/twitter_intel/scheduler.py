@@ -51,7 +51,7 @@ def scrape_and_extract(store, scraper, extractor, discovery, cfg):
     all_tweets = []
     for handle, tweets in scraper.scrape_all(handles).items():
         for t in tweets:
-            store.insert_tweet(t["tweet_id"], handle, t["text"], t["likes"], t["retweets"])
+            store.insert_tweet(t["tweet_id"], handle, t["text"], t["likes"], t["retweets"], t.get("tweet_time"))
             all_tweets.append({"tweet_id": t["tweet_id"], "text": t["text"]})
 
     count = extractor.run()

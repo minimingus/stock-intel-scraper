@@ -3,6 +3,9 @@ from playwright.sync_api import sync_playwright, Page
 
 logger = logging.getLogger(__name__)
 
+_SCROLL_ROUNDS = 8       # scroll rounds per account to load historical tweets
+_SCROLL_PAUSE_MS = 1500  # ms to wait after each scroll
+
 
 def _parse_count(text: str) -> int:
     """Parse display counts: '1.2K' -> 1200, '5.6M' -> 5_600_000, '34' -> 34."""
@@ -20,7 +23,9 @@ def _parse_count(text: str) -> int:
 
 
 def _extract_tweets_from_page(page: Page) -> list:
+    seen_ids: set = set()
     tweets = []
+
     for el in page.locator('[data-testid="tweet"]').all():
         text_el = el.locator('[data-testid="tweetText"]').first
         text = text_el.inner_text() if text_el.count() > 0 else ""
@@ -33,9 +38,13 @@ def _extract_tweets_from_page(page: Page) -> list:
             if "/status/" in href:
                 tweet_id = href.split("/status/")[1].split("/")[0].split("?")[0]
                 break
-        if not tweet_id:
-            logger.debug("Could not extract tweet_id for a tweet element, skipping")
+        if not tweet_id or tweet_id in seen_ids:
             continue
+        seen_ids.add(tweet_id)
+
+        # Extract actual tweet timestamp from <time datetime="...">
+        time_el = el.locator("time").first
+        tweet_time = time_el.get_attribute("datetime") if time_el.count() > 0 else None
 
         like_el = el.locator('[data-testid="like"] span').last
         likes_text = like_el.inner_text() if like_el.count() > 0 else "0"
@@ -47,13 +56,15 @@ def _extract_tweets_from_page(page: Page) -> list:
             "text": text,
             "likes": _parse_count(likes_text),
             "retweets": _parse_count(rt_text),
+            "tweet_time": tweet_time,
         })
+
     return tweets
 
 
 class TwitterScraper:
-    def scrape_handle(self, handle: str) -> list:
-        """Scrape recent tweets for a handle. Returns list of tweet dicts."""
+    def scrape_handle(self, handle: str, scroll_rounds: int = _SCROLL_ROUNDS) -> list:
+        """Scrape historical tweets for a handle by scrolling the timeline."""
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -75,6 +86,12 @@ class TwitterScraper:
                         logger.warning("Login wall for @%s, skipping", handle)
                         return []
                     page.wait_for_selector('[data-testid="tweet"]', timeout=15_000)
+
+                    # Scroll to load historical tweets
+                    for _ in range(scroll_rounds):
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                        page.wait_for_timeout(_SCROLL_PAUSE_MS)
+
                     return _extract_tweets_from_page(page)
                 except Exception as e:
                     logger.warning("Failed to scrape @%s: %s", handle, e)
