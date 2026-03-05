@@ -10,7 +10,7 @@ on:
 jobs:
   brief:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
 
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -30,8 +30,25 @@ jobs:
       - name: Install Playwright browsers
         run: playwright install chromium --with-deps
 
+      # Restore persistent DB from previous run
+      - name: Restore database
+        id: db-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: data/twitter_intel.db
+          key: db-${{ github.run_id }}
+          restore-keys: db-
+
       - name: Scrape experts
         run: python scripts/run_intel.py scrape
 
       - name: Send brief
         run: python scripts/run_intel.py brief
+
+      # Always save DB so next run has accumulated data
+      - name: Save database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/twitter_intel.db
+          key: db-${{ github.run_id }}

@@ -55,6 +55,17 @@ class TwitterIntelStore:
         )
         self.conn.commit()
 
+    def get_experts_without_tweets(self) -> list:
+        """Return handles that have never been scraped (for backfill)."""
+        rows = self.conn.execute("""
+            SELECT e.handle FROM experts e
+            WHERE e.active = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM tweets t WHERE t.handle = e.handle
+              )
+        """).fetchall()
+        return [r["handle"] for r in rows]
+
     def get_active_experts(self) -> list:
         rows = self.conn.execute(
             "SELECT handle FROM experts WHERE active = 1"

@@ -44,15 +44,35 @@ def build_components(cfg: dict):
     return store, scraper, extractor, discovery, brief
 
 
+_BACKFILL_SCROLL_ROUNDS = 25  # deep scrape for new experts (~200 tweets)
+
+
+def _ingest_tweets(store, handle: str, tweets: list, all_tweets: list):
+    for t in tweets:
+        store.insert_tweet(
+            t["tweet_id"], handle, t["text"],
+            t["likes"], t["retweets"], t.get("tweet_time"),
+        )
+        all_tweets.append({"tweet_id": t["tweet_id"], "text": t["text"]})
+
+
 def scrape_and_extract(store, scraper, extractor, discovery, cfg):
+    all_tweets = []
+
+    # Backfill new experts first with deep historical scrape
+    new_experts = store.get_experts_without_tweets()
+    if new_experts:
+        logger.info("Backfilling %d new expert(s) with deep scrape...", len(new_experts))
+        for handle in new_experts:
+            tweets = scraper.scrape_handle(handle, scroll_rounds=_BACKFILL_SCROLL_ROUNDS)
+            _ingest_tweets(store, handle, tweets, all_tweets)
+            logger.info("Backfilled @%s: %d tweets", handle, len(tweets))
+
+    # Regular scrape for all active experts
     handles = store.get_active_experts()
     logger.info("Scraping %d expert accounts...", len(handles))
-
-    all_tweets = []
     for handle, tweets in scraper.scrape_all(handles).items():
-        for t in tweets:
-            store.insert_tweet(t["tweet_id"], handle, t["text"], t["likes"], t["retweets"], t.get("tweet_time"))
-            all_tweets.append({"tweet_id": t["tweet_id"], "text": t["text"]})
+        _ingest_tweets(store, handle, tweets, all_tweets)
 
     count = extractor.run()
     logger.info("Extracted %d signals", count)
