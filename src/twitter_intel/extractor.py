@@ -1,76 +1,95 @@
-import json
 import logging
-import os
-
-from anthropic import Anthropic
+import re
 
 from .store import TwitterIntelStore
 
 logger = logging.getLogger(__name__)
 
-_EXTRACTION_PROMPT = """\
-You are a financial signal extractor. Given tweets from trading experts, extract all mentions of:
-- Stock tickers (e.g. NVDA, TSLA, AAPL)
-- Crypto assets (e.g. BTC, ETH, SOL)
-- Polymarket prediction markets (any prediction market question being discussed)
+# Common crypto tickers to distinguish from stock tickers
+_CRYPTO = {
+    "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "DOGE", "MATIC",
+    "DOT", "LINK", "UNI", "ATOM", "LTC", "BCH", "XLM", "ALGO", "VET",
+    "FIL", "THETA", "TRX", "EOS", "XMR", "AAVE", "COMP", "SNX", "MKR",
+    "SHIB", "PEPE", "ARB", "OP", "SUI", "APT", "INJ", "SEI", "TIA",
+}
 
-For each mention return one JSON object with:
-  tweet_id   : string (copy from input)
-  ticker     : string (the symbol or short name)
-  asset_type : "stock" | "crypto" | "polymarket"
-  sentiment  : "bullish" | "bearish" | "neutral"
+_BULLISH = re.compile(
+    r"\b(bull(?:ish)?|long|buy|breakout|moon|pump|surge|rally|rip|go(?:ing)? up|ATH|upside)\b",
+    re.IGNORECASE,
+)
+_BEARISH = re.compile(
+    r"\b(bear(?:ish)?|short|sell|dump|crash|drop(?:ping)?|downside|correction|lower)\b",
+    re.IGNORECASE,
+)
 
-Return ONLY a valid JSON array. No markdown. No explanation.
-If a tweet has no clear financial signal, omit it entirely.
 
-Tweets:
-{tweets_json}"""
+def _sentiment(text: str) -> str:
+    bulls = len(_BULLISH.findall(text))
+    bears = len(_BEARISH.findall(text))
+    if bulls > bears:
+        return "bullish"
+    if bears > bulls:
+        return "bearish"
+    return "neutral"
+
+
+def _extract_tickers(text: str) -> list[dict]:
+    """Return list of {ticker, asset_type} from cashtags, hashtag-tickers, and bare crypto names."""
+    results = []
+    seen = set()
+
+    # Cashtags: $BTC, $NVDA
+    for m in re.finditer(r"\$([A-Z]{1,6})", text):
+        ticker = m.group(1)
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        asset_type = "crypto" if ticker in _CRYPTO else "stock"
+        results.append({"ticker": ticker, "asset_type": asset_type})
+
+    # Hashtag crypto tickers: #BTC, #XRP, #ETH
+    for m in re.finditer(r"#([A-Za-z]{1,6})\b", text):
+        ticker = m.group(1).upper()
+        if ticker in seen or ticker not in _CRYPTO:
+            continue
+        seen.add(ticker)
+        results.append({"ticker": ticker, "asset_type": "crypto"})
+
+    # Bare crypto names without $ (e.g. "Bitcoin", "Ethereum", "Solana")
+    crypto_aliases = {
+        "BITCOIN": "BTC", "ETHEREUM": "ETH", "SOLANA": "SOL",
+        "CARDANO": "ADA", "RIPPLE": "XRP", "DOGECOIN": "DOGE",
+    }
+    for word, ticker in crypto_aliases.items():
+        if re.search(rf"\b{word}\b", text, re.IGNORECASE) and ticker not in seen:
+            seen.add(ticker)
+            results.append({"ticker": ticker, "asset_type": "crypto"})
+
+    return results
 
 
 class SignalExtractor:
     def __init__(self, store: TwitterIntelStore):
         self.store = store
-        self.client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
     def extract_batch(self, tweets: list) -> int:
         """Extract signals from a batch of tweets. Returns count of signals stored."""
-        if not tweets:
-            return 0
-
-        tweets_json = json.dumps(
-            [{"tweet_id": t["tweet_id"], "text": t["text"]} for t in tweets],
-            ensure_ascii=False,
-        )
-        try:
-            msg = self.client.messages.create(
-                model="claude-haiku-4-5-20251001",
-                max_tokens=4096,
-                messages=[{
-                    "role": "user",
-                    "content": _EXTRACTION_PROMPT.format(tweets_json=tweets_json),
-                }],
-            )
-            raw = msg.content[0].text.strip()
-            # Strip markdown code fences that some LLM responses include
-            if raw.startswith("```"):
-                raw = raw.split("\n", 1)[1].rsplit("```", 1)[0].strip()
-            signals = json.loads(raw)
-        except Exception as e:
-            logger.error("Signal extraction failed: %s", e)
-            return 0
-
         count = 0
-        for sig in signals:
-            try:
-                self.store.insert_signal(
-                    tweet_id=sig["tweet_id"],
-                    ticker=sig["ticker"].upper(),
-                    asset_type=sig["asset_type"],
-                    sentiment=sig["sentiment"],
-                )
-                count += 1
-            except Exception as e:
-                logger.warning("Skipping malformed signal %s: %s", sig, e)
+        for tweet in tweets:
+            text = tweet.get("text", "")
+            tweet_id = tweet["tweet_id"]
+            sentiment = _sentiment(text)
+            for item in _extract_tickers(text):
+                try:
+                    self.store.insert_signal(
+                        tweet_id=tweet_id,
+                        ticker=item["ticker"],
+                        asset_type=item["asset_type"],
+                        sentiment=sentiment,
+                    )
+                    count += 1
+                except Exception as e:
+                    logger.warning("Skipping signal %s: %s", item, e)
         return count
 
     def run(self) -> int:

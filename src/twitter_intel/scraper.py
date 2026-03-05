@@ -22,7 +22,7 @@ def _parse_count(text: str) -> int:
 def _extract_tweets_from_page(page: Page) -> list:
     tweets = []
     for el in page.locator('[data-testid="tweet"]').all():
-        text_el = el.locator('[data-testid="tweetText"]')
+        text_el = el.locator('[data-testid="tweetText"]').first
         text = text_el.inner_text() if text_el.count() > 0 else ""
         if not text:
             continue
@@ -37,9 +37,9 @@ def _extract_tweets_from_page(page: Page) -> list:
             logger.debug("Could not extract tweet_id for a tweet element, skipping")
             continue
 
-        like_el = el.locator('[data-testid="like"] span')
+        like_el = el.locator('[data-testid="like"] span').last
         likes_text = like_el.inner_text() if like_el.count() > 0 else "0"
-        rt_el = el.locator('[data-testid="retweet"] span')
+        rt_el = el.locator('[data-testid="retweet"] span').last
         rt_text = rt_el.inner_text() if rt_el.count() > 0 else "0"
 
         tweets.append({
