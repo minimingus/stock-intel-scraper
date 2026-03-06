@@ -2,13 +2,59 @@ name: Daily Trading Brief
 
 on:
   schedule:
-    - cron: "0 8 * * *"   # 8am UTC daily
-    - cron: "0 14 * * *"  # 2pm UTC daily
-    - cron: "0 20 * * *"  # 8pm UTC daily
+    - cron: "0 8 * * 1-5"    # 8am UTC Mon-Fri  (3am ET, pre-market)
+    - cron: "0 14 * * 1-5"   # 2pm UTC Mon-Fri  (9am ET, market open)
+    - cron: "0 20 * * 1-5"   # 8pm UTC Mon-Fri  (3pm ET, near close)
   workflow_dispatch:
 
 jobs:
+  market-check:
+    runs-on: ubuntu-latest
+    outputs:
+      open: ${{ steps.check.outputs.open }}
+    steps:
+      - name: Check NYSE holiday
+        id: check
+        run: |
+          python3 - <<'EOF'
+          import os
+          from datetime import date
+
+          # NYSE holidays 2025-2026 (observed dates)
+          HOLIDAYS = {
+              # 2025
+              date(2025, 1, 1),   # New Year's Day
+              date(2025, 1, 20),  # MLK Day
+              date(2025, 2, 17),  # Presidents' Day
+              date(2025, 4, 18),  # Good Friday
+              date(2025, 5, 26),  # Memorial Day
+              date(2025, 7, 4),   # Independence Day
+              date(2025, 9, 1),   # Labor Day
+              date(2025, 11, 27), # Thanksgiving
+              date(2025, 12, 25), # Christmas
+              # 2026
+              date(2026, 1, 1),   # New Year's Day
+              date(2026, 1, 19),  # MLK Day
+              date(2026, 2, 16),  # Presidents' Day
+              date(2026, 4, 3),   # Good Friday
+              date(2026, 5, 25),  # Memorial Day
+              date(2026, 7, 3),   # Independence Day (observed, Jul 4 is Sat)
+              date(2026, 9, 7),   # Labor Day
+              date(2026, 11, 26), # Thanksgiving
+              date(2026, 12, 25), # Christmas
+          }
+
+          today = date.today()
+          is_open = today not in HOLIDAYS
+          result = "true" if is_open else "false"
+          print(f"Today: {today} | Market open: {result}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"open={result}\n")
+          EOF
+
   brief:
+    needs: market-check
+    if: needs.market-check.outputs.open == 'true' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -33,8 +79,6 @@ jobs:
         run: |
           npm install -g @steipete/bird --prefix /opt/bird-cli
           echo "BIRD_BIN=/opt/bird-cli/bin/bird" >> $GITHUB_ENV
-          echo "=== bird search help ==="
-          /opt/bird-cli/bin/bird search --help || true
 
       - name: Restore database
         uses: actions/cache/restore@v4
