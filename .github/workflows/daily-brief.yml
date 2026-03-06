@@ -31,8 +31,8 @@ jobs:
 
       - name: Install bird CLI
         run: |
-          npm install -g @steipete/bird
-          echo "BIRD_BIN=$(npm config get prefix)/bin/bird" >> $GITHUB_ENV
+          npm install -g @steipete/bird --prefix /opt/bird-cli
+          echo "BIRD_BIN=/opt/bird-cli/bin/bird" >> $GITHUB_ENV
 
       - name: Restore database
         uses: actions/cache/restore@v4
