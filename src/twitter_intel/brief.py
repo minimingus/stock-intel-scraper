@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 _MIN_SIGNALS = 5
 _LOOKBACK_STEPS = [24, 48, 72, 120]
-_PROVEN_MIN_TRADES = 5
+_PROVEN_MIN_TRADES = 8
 _PROVEN_MIN_EXPECTANCY = 0.0
 _ACCOUNT_SIZE = float(os.environ.get("ACCOUNT_SIZE", "10000"))
 _RISK_PER_TRADE_PCT = 0.01
@@ -97,7 +97,7 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
         proven_count = 0
         for h in handles:
             e = expert_map.get(h)
-            if e and e["total"] >= _PROVEN_MIN_TRADES and e["expectancy"] > _PROVEN_MIN_EXPECTANCY:
+            if e and e["total"] >= _PROVEN_MIN_TRADES and e.get("adjusted_expectancy", e["expectancy"]) > _PROVEN_MIN_EXPECTANCY:
                 score += max(e["expectancy"], 0.01)
                 proven_count += 1
             else:
@@ -163,9 +163,12 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
 
             age_str = _signal_age_label(s.get("latest_signal_time"), trade_type)
 
+            expert_handles = [f"@{h.strip()}" for h in (s.get("experts") or "").split(",") if h.strip()]
+            experts_str = " ".join(expert_handles)
             lines.append(
-                f"  {tier_icon} <b>${ticker}</b> — {n_experts} expert(s) · {trade_label} · Score {score:.3f}"
+                f"  {tier_icon} <b>${ticker}</b> — {trade_label} · Score {score:.3f}"
             )
+            lines.append(f"     {experts_str}")
             price_line = f"     Entry: {entry_str}"
             if target_str:
                 price_line += f"  Target: {target_str}"
@@ -197,9 +200,10 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
             days = e["avg_days_held"]
             bar = "▓" * (win_rate // 10) + "░" * (10 - win_rate // 10)
             exp_sign = "+" if exp >= 0 else ""
+            wilson = int((e.get("wilson_conf") or 0) * 100)
             lines.append(
                 f"  @{e['handle']} {bar} {win_rate}% · "
-                f"E={exp_sign}{exp:.1f}% · PF={pf:.2f} · "
+                f"E={exp_sign}{exp:.1f}% · Conf={wilson}% · PF={pf:.2f} · "
                 f"{e['wins']}W/{e['losses']}L · {days:.1f}d avg"
             )
         lines.append("")

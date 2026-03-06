@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 _CONVERGENCE_WINDOW_MIN = 30
 _CONVERGENCE_MIN_EXPERTS = 2
-_PROVEN_MIN_TRADES = 5
+_PROVEN_MIN_TRADES = 8
 _PROVEN_MIN_EXPECTANCY = 0.0
 _ALERT_COOLDOWN_HOURS = 4
 
@@ -74,7 +74,7 @@ def run_alert_check(store: TwitterIntelStore, scorer) -> int:
     for row in rows:
         handle = row["handle"]
         e = expert_map.get(handle)
-        if not e or e["total"] < _PROVEN_MIN_TRADES or e["expectancy"] <= _PROVEN_MIN_EXPECTANCY:
+        if not e or e["total"] < _PROVEN_MIN_TRADES or e.get("adjusted_expectancy", e["expectancy"]) <= _PROVEN_MIN_EXPECTANCY:
             continue
         by_ticker.setdefault(row["ticker"], []).append(e)
 
