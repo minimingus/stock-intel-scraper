@@ -81,7 +81,7 @@ class TwitterScraper:
         count = _BACKFILL_COUNT if scroll_rounds > 8 else _DEFAULT_COUNT
         return _fetch_tweets(handle, count)
 
-    def scrape_all(self, handles: list, delay_ms: int = 1000) -> dict:
+    def scrape_all(self, handles: list, delay_ms: int = 3000) -> dict:
         """Scrape multiple handles with a delay to avoid rate limiting."""
         import time
         results = {}
