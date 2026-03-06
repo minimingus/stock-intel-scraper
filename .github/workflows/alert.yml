@@ -1,0 +1,55 @@
+name: Real-Time Alert
+
+on:
+  schedule:
+    # Every 30 min, 14:00-20:30 UTC, Mon-Fri (9am-4:30pm ET)
+    - cron: "0,30 14-20 * * 1-5"
+    - cron: "0 21 * * 1-5"   # final run at 4pm ET (market close)
+  workflow_dispatch:
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+      CT0: ${{ secrets.CT0 }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install bird CLI
+        run: |
+          npm install -g @steipete/bird --prefix /opt/bird-cli
+          echo "BIRD_BIN=/opt/bird-cli/bin/bird" >> $GITHUB_ENV
+
+      - name: Restore database
+        uses: actions/cache/restore@v4
+        with:
+          path: data/twitter_intel.db
+          key: db-${{ github.run_id }}
+          restore-keys: db-
+
+      - name: Scrape + extract
+        run: python scripts/run_intel.py scrape
+
+      - name: Check for alerts
+        run: python scripts/run_intel.py alert
+
+      - name: Save database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data/twitter_intel.db
+          key: db-${{ github.run_id }}
