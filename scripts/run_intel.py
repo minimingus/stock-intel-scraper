@@ -8,6 +8,7 @@ Usage:
     python scripts/run_intel.py start               # start the scheduler (blocking)
     python scripts/run_intel.py backfill            # deep-scrape all new experts
     python scripts/run_intel.py backfill handle1,handle2  # deep-scrape specific handles
+    python scripts/run_intel.py alert               # run alert check and send alerts
 """
 import logging
 import sys
@@ -16,9 +17,12 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s — %(message)s",
 )
+logger = logging.getLogger(__name__)
 sys.path.insert(0, ".")
 
 from src.twitter_intel import scheduler as sched
+from src.twitter_intel import alerter as alert_module
+from src.twitter_intel.scorer import ExpertScorer
 
 
 def main():
@@ -44,6 +48,10 @@ def main():
             if len(sys.argv) > 2 and sys.argv[2]:
                 handles = [h.strip() for h in sys.argv[2].split(",") if h.strip()]
             sched.backfill_experts(store, scraper, extractor, handles)
+        elif cmd == "alert":
+            scorer = ExpertScorer(store)
+            sent = alert_module.run_alert_check(store, scorer)
+            logger.info("Alert check: %d sent", sent)
         else:
             print(f"Unknown command: {cmd}")
             print(__doc__)
