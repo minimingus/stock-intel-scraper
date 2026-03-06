@@ -52,6 +52,9 @@ def _fetch_tweets(handle: str, count: int) -> list:
         for t in tweets_raw:
             tweet_id = str(t.get("id", ""))
             text = t.get("text", "")
+            # Skip retweets — only credit original calls, not forwards
+            if text.startswith("RT @"):
+                continue
             if not tweet_id or not text:
                 continue
             tweets.append({
