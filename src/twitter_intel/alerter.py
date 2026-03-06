@@ -61,8 +61,7 @@ def run_alert_check(store: TwitterIntelStore, scorer) -> int:
 
     # Get signals from last N minutes
     rows = store.conn.execute("""
-        SELECT s.ticker, t.handle,
-               COALESCE(t.tweet_time, t.scraped_at) AS signal_time
+        SELECT DISTINCT s.ticker, t.handle
         FROM signals s
         JOIN tweets t ON t.tweet_id = s.tweet_id
         WHERE s.sentiment = 'bullish'
