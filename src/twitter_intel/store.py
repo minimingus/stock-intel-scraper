@@ -63,6 +63,8 @@ class TwitterIntelStore:
                 sent_at    TEXT NOT NULL,
                 expert_handles TEXT NOT NULL
             );
+            CREATE INDEX IF NOT EXISTS idx_alerts_sent_ticker_time
+                ON alerts_sent (ticker, sent_at);
         """)
         # Migrate existing DBs
         for migration in [
@@ -74,6 +76,7 @@ class TwitterIntelStore:
             "ALTER TABLE paper_trades ADD COLUMN max_drawdown_pct REAL",
             "ALTER TABLE paper_trades ADD COLUMN days_held REAL",
             "CREATE TABLE IF NOT EXISTS alerts_sent (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, sent_at TEXT NOT NULL, expert_handles TEXT NOT NULL)",
+            "CREATE INDEX IF NOT EXISTS idx_alerts_sent_ticker_time ON alerts_sent (ticker, sent_at)",
         ]:
             try:
                 self.conn.execute(migration)
@@ -248,6 +251,13 @@ class TwitterIntelStore:
         )
         self.conn.commit()
 
+    def prune_old_alerts(self, days: int = 1):
+        self.conn.execute(
+            "DELETE FROM alerts_sent WHERE sent_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        self.conn.commit()
+
     def get_expert_count(self) -> int:
         return self.conn.execute(
             "SELECT COUNT(*) FROM experts WHERE active = 1"
@@ -283,7 +293,9 @@ class TwitterIntelStore:
                    SUM(pnl_pct) AS cumulative_pnl
             FROM paper_trades WHERE outcome != 'open'
         """).fetchone()
-        return dict(row) if row else {}
+        if not row or not row["total"]:
+            return {}
+        return dict(row)
 
     def was_alert_sent_recently(self, ticker: str, within_hours: int = 4) -> bool:
         row = self.conn.execute("""
@@ -294,9 +306,10 @@ class TwitterIntelStore:
         return row is not None
 
     def record_alert_sent(self, ticker: str, expert_handles: list):
+        handles_str = ",".join(str(h) for h in expert_handles) if expert_handles else ""
         self.conn.execute(
             "INSERT INTO alerts_sent (ticker, sent_at, expert_handles) VALUES (?, ?, ?)",
-            (ticker, datetime.now(timezone.utc).isoformat(), ",".join(expert_handles)),
+            (ticker, datetime.now(timezone.utc).isoformat(), handles_str),
         )
         self.conn.commit()
 
