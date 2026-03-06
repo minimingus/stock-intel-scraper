@@ -28,10 +28,10 @@ def _bird_cmd() -> str:
 
 
 def _fetch_tweets(handle: str, count: int) -> list:
-    """Call bird user-tweets and return parsed tweet dicts."""
+    """Call bird search 'from:handle' and return parsed tweet dicts."""
     try:
         result = subprocess.run(
-            [_bird_cmd(), "user-tweets", handle, "-n", str(count), "--json", "--plain"],
+            [_bird_cmd(), "search", f"from:{handle}", "-n", str(count), "--json", "--plain"],
             capture_output=True,
             text=True,
             timeout=60,
