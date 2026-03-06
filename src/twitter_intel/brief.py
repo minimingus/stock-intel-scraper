@@ -8,6 +8,7 @@ import yfinance as yf
 
 from .store import TwitterIntelStore
 from . import market_context as mctx
+from . import finviz_scraper as fvz
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,33 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
 
             age_str = _signal_age_label(s.get("latest_signal_time"), trade_type)
 
+            # Earnings proximity
+            earn_days = mctx.earnings_proximity(ticker)
+            earn_str = ""
+            if earn_days is not None and earn_days <= 7:
+                earn_str = f"⚠️ Earnings in {earn_days}d — elevated risk"
+                if earn_days <= 3 and tier == "HIGH":
+                    tier = "MEDIUM"
+                    tier_icon = "🔵"
+
+            # Unusual options flow
+            flow = mctx.options_flow(ticker)
+            flow_str = ""
+            if flow:
+                flow_str = f"🔮 Options: {flow['call_volume']:,} calls · Vol/OI {flow['max_vol_oi']}×"
+
+            # Already-moved chasing warning
+            chase_str = ""
+            if ctx["change_pct"] is not None and ctx["change_pct"] > 0.03:
+                chase_str = f"📈 Already +{ctx['change_pct']*100:.1f}% today — wait for pullback"
+
+            # Short interest
+            short_pct = fvz.short_interest(ticker)
+            short_str = ""
+            if short_pct is not None and short_pct > 0.10:
+                squeeze = " — squeeze potential" if short_pct > 0.20 else ""
+                short_str = f"Short: {short_pct*100:.1f}% float{squeeze}"
+
             expert_handles = [f"@{h.strip()}" for h in (s.get("experts") or "").split(",") if h.strip()]
             experts_str = " ".join(expert_handles)
             lines.append(
@@ -177,6 +205,14 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
                 lines.append(f"     {rr_str}")
             if ctx_str:
                 lines.append(f"     {ctx_str}")
+            if chase_str:
+                lines.append(f"     {chase_str}")
+            if earn_str:
+                lines.append(f"     {earn_str}")
+            if flow_str:
+                lines.append(f"     {flow_str}")
+            if short_str:
+                lines.append(f"     {short_str}")
             if hist_str:
                 lines.append(f"     {hist_str}")
             if ta_notes:
@@ -249,6 +285,7 @@ class BriefGenerator:
 
         text = _build_brief(signals, expert_scores, self.store)
         mctx.clear_cache()
+        fvz.clear_cache()
 
         # Portfolio summary
         summary = self.store.get_portfolio_summary()
