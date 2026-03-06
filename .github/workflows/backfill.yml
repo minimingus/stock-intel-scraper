@@ -11,7 +11,11 @@ on:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
+
+    env:
+      AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+      CT0: ${{ secrets.CT0 }}
 
     steps:
       - uses: actions/checkout@v4
@@ -24,8 +28,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Install Playwright browsers
-        run: playwright install chromium --with-deps
+      - name: Install bird CLI
+        run: npm install -g @steipete/bird
 
       - name: Restore database
         uses: actions/cache/restore@v4

@@ -1,112 +1,93 @@
+import json
 import logging
-from playwright.sync_api import sync_playwright, Page
+import os
+import subprocess
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
-_SCROLL_ROUNDS = 4       # scroll rounds per account (~30-40 tweets)
-_SCROLL_PAUSE_MS = 1500  # ms to wait after each scroll
+_DEFAULT_COUNT = 100   # tweets per account for regular scrape
+_BACKFILL_COUNT = 500  # tweets per account for backfill
 
 
-def _parse_count(text: str) -> int:
-    """Parse display counts: '1.2K' -> 1200, '5.6M' -> 5_600_000, '34' -> 34."""
-    text = text.strip().replace(",", "")
-    if not text:
-        return 0
+def _parse_created_at(s: str) -> str | None:
+    """Convert 'Thu Mar 05 21:21:04 +0000 2026' to ISO 8601 UTC string."""
+    if not s:
+        return None
     try:
-        if text.upper().endswith("K"):
-            return int(float(text[:-1]) * 1_000)
-        if text.upper().endswith("M"):
-            return int(float(text[:-1]) * 1_000_000)
-        return int(float(text))
+        dt = datetime.strptime(s, "%a %b %d %H:%M:%S +0000 %Y")
+        return dt.replace(tzinfo=timezone.utc).isoformat()
     except ValueError:
-        return 0
+        return None
 
 
-def _extract_tweets_from_page(page: Page) -> list:
-    seen_ids: set = set()
-    tweets = []
+def _bird_env() -> dict:
+    env = os.environ.copy()
+    # Ensure AUTH_TOKEN and CT0 are available
+    return env
 
-    for el in page.locator('[data-testid="tweet"]').all():
-        text_el = el.locator('[data-testid="tweetText"]').first
-        text = text_el.inner_text() if text_el.count() > 0 else ""
-        if not text:
-            continue
 
-        tweet_id = ""
-        for link in el.locator('a[href*="/status/"]').all():
-            href = link.get_attribute("href") or ""
-            if "/status/" in href:
-                tweet_id = href.split("/status/")[1].split("/")[0].split("?")[0]
-                break
-        if not tweet_id or tweet_id in seen_ids:
-            continue
-        seen_ids.add(tweet_id)
+def _fetch_tweets(handle: str, count: int) -> list:
+    """Call bird user-tweets and return parsed tweet dicts."""
+    try:
+        result = subprocess.run(
+            ["bird", "user-tweets", handle, "-n", str(count), "--json", "--plain"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=_bird_env(),
+        )
+        if result.returncode != 0:
+            logger.warning("bird failed for @%s: %s", handle, result.stderr.strip())
+            return []
 
-        # Extract actual tweet timestamp from <time datetime="...">
-        time_el = el.locator("time").first
-        tweet_time = time_el.get_attribute("datetime") if time_el.count() > 0 else None
+        # Output starts with info lines before JSON array — find the JSON
+        out = result.stdout
+        json_start = out.find("[")
+        if json_start == -1:
+            logger.warning("No JSON in bird output for @%s", handle)
+            return []
 
-        like_el = el.locator('[data-testid="like"] span').last
-        likes_text = like_el.inner_text() if like_el.count() > 0 else "0"
-        rt_el = el.locator('[data-testid="retweet"] span').last
-        rt_text = rt_el.inner_text() if rt_el.count() > 0 else "0"
-
-        tweets.append({
-            "tweet_id": tweet_id,
-            "text": text,
-            "likes": _parse_count(likes_text),
-            "retweets": _parse_count(rt_text),
-            "tweet_time": tweet_time,
-        })
-
-    return tweets
+        tweets_raw = json.loads(out[json_start:])
+        tweets = []
+        for t in tweets_raw:
+            tweet_id = str(t.get("id", ""))
+            text = t.get("text", "")
+            if not tweet_id or not text:
+                continue
+            tweets.append({
+                "tweet_id": tweet_id,
+                "text": text,
+                "likes": t.get("likeCount", 0) or 0,
+                "retweets": t.get("retweetCount", 0) or 0,
+                "tweet_time": _parse_created_at(t.get("createdAt")),
+            })
+        return tweets
+    except subprocess.TimeoutExpired:
+        logger.warning("bird timed out for @%s", handle)
+        return []
+    except Exception as e:
+        logger.warning("Error fetching @%s: %s", handle, e)
+        return []
 
 
 class TwitterScraper:
-    def scrape_handle(self, handle: str, scroll_rounds: int = _SCROLL_ROUNDS) -> list:
-        """Scrape historical tweets for a handle by scrolling the timeline."""
-        try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
-                context = browser.new_context(
-                    user_agent=(
-                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/120.0.0.0 Safari/537.36"
-                    )
-                )
-                page = context.new_page()
-                try:
-                    page.goto(
-                        f"https://x.com/{handle}",
-                        wait_until="domcontentloaded",
-                        timeout=30_000,
-                    )
-                    if page.locator('[data-testid="loginButton"]').count() > 0:
-                        logger.warning("Login wall for @%s, skipping", handle)
-                        return []
-                    page.wait_for_selector('[data-testid="tweet"]', timeout=15_000)
+    def scrape_handle(self, handle: str, scroll_rounds: int = 0) -> list:
+        """
+        Fetch tweets for a handle via bird CLI.
+        scroll_rounds is ignored (kept for API compatibility) — use count instead.
+        Backfill uses _BACKFILL_COUNT; regular uses _DEFAULT_COUNT.
+        """
+        count = _BACKFILL_COUNT if scroll_rounds > 8 else _DEFAULT_COUNT
+        return _fetch_tweets(handle, count)
 
-                    # Scroll to load historical tweets
-                    for _ in range(scroll_rounds):
-                        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        page.wait_for_timeout(_SCROLL_PAUSE_MS)
-
-                    return _extract_tweets_from_page(page)
-                except Exception as e:
-                    logger.warning("Failed to scrape @%s: %s", handle, e)
-                    return []
-                finally:
-                    context.close()
-                    browser.close()
-        except Exception as e:
-            logger.warning("Playwright error for @%s: %s", handle, e)
-            return []
-
-    def scrape_all(self, handles: list) -> dict:
-        """Scrape multiple handles. Returns {handle: [tweets]}."""
+    def scrape_all(self, handles: list, delay_ms: int = 1000) -> dict:
+        """Scrape multiple handles with a delay to avoid rate limiting."""
+        import time
         results = {}
-        for handle in handles:
+        for i, handle in enumerate(handles):
             results[handle] = self.scrape_handle(handle)
             logger.info("Scraped @%s: %d tweets", handle, len(results[handle]))
+            if i < len(handles) - 1:
+                time.sleep(delay_ms / 1000)
         return results
