@@ -1,6 +1,7 @@
 import logging
 from datetime import datetime, timedelta, timezone
 
+import numpy as np
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
@@ -42,20 +43,57 @@ def _price_history_since(ticker: str, since: datetime):
         return None
 
 
+def _atr_stop(ticker: str, entry: float) -> float:
+    """Compute stop price using 1.5× ATR(14). Clamped to 2%-10% below entry."""
+    try:
+        hist = yf.Ticker(ticker).history(period="20d", interval="1d", auto_adjust=True)
+        if len(hist) < 15:
+            return entry * (1 - _STOP_LOSS_PCT)
+        high = hist["High"].iloc[-14:].values
+        low = hist["Low"].iloc[-14:].values
+        prev_close = hist["Close"].iloc[-15:-1].values
+        tr = np.maximum(high - low, np.maximum(np.abs(high - prev_close), np.abs(low - prev_close)))
+        atr = tr.mean()
+        stop = entry - 1.5 * atr
+        # Clamp: never closer than 2% or wider than 10%
+        stop = max(entry * 0.90, min(entry * 0.98, stop))
+        return stop
+    except Exception as e:
+        logger.debug("ATR fetch failed for %s: %s", ticker, e)
+        return entry * (1 - _STOP_LOSS_PCT)
+
+
 def open_trades_for_new_signals(store) -> int:
     """Open paper trades for any bullish stock signals not yet tracked. Returns count opened."""
     new_signals = store.get_new_signal_trades()
     opened = 0
     for sig in new_signals:
         ticker = sig["ticker"]
+        signal_time = sig.get("signal_time") or datetime.now(timezone.utc).isoformat()
+
+        # Skip stale signals
+        try:
+            st = datetime.fromisoformat(signal_time)
+            if st.tzinfo is None:
+                st = st.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - st).total_seconds() / 3600
+            if age_hours > 1.0:
+                logger.debug("Skipping stale signal %s (%.1fh old)", ticker, age_hours)
+                continue
+        except Exception:
+            pass
+
+        if not sig.get("target_price"):
+            logger.debug("Skipping %s — no explicit price target in tweet", ticker)
+            continue
+
         price = _current_price(ticker)
         if price is None:
             logger.debug("No price for %s, skipping paper trade", ticker)
             continue
 
-        target = sig.get("target_price") or (price * 1.10)
-        stop = price * (1 - _STOP_LOSS_PCT)
-        signal_time = sig.get("signal_time") or datetime.now(timezone.utc).isoformat()
+        target = sig["target_price"]
+        stop = _atr_stop(ticker, price)
 
         store.open_paper_trade(
             ticker=ticker,
