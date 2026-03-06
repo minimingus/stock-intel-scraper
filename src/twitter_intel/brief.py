@@ -1,17 +1,22 @@
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import requests
 import yfinance as yf
 
 from .store import TwitterIntelStore
+from . import market_context as mctx
 
 logger = logging.getLogger(__name__)
 
-_MIN_SIGNALS = 5          # target at least this many tickers per brief
-_LOOKBACK_STEPS = [24, 48, 72, 120]  # expand window until we have enough signals
+_MIN_SIGNALS = 5
+_LOOKBACK_STEPS = [24, 48, 72, 120]
+_PROVEN_MIN_TRADES = 5
+_PROVEN_MIN_EXPECTANCY = 0.0
+_ACCOUNT_SIZE = float(os.environ.get("ACCOUNT_SIZE", "10000"))
+_RISK_PER_TRADE_PCT = 0.01
 
 
 def _fetch_price(ticker: str) -> float | None:
@@ -23,7 +28,6 @@ def _fetch_price(ticker: str) -> float | None:
 
 
 def _dedup_ta_notes(raw: str | None) -> str:
-    """Deduplicate TA notes joined with ||| separator, return top 2."""
     if not raw:
         return ""
     seen: set = set()
@@ -37,48 +41,154 @@ def _dedup_ta_notes(raw: str | None) -> str:
     return " · ".join(unique[:2])
 
 
-def _build_brief(signals: list, expert_scores: list) -> str:
+def _signal_age_label(latest_signal_time: str | None, trade_type: str) -> str:
+    if not latest_signal_time:
+        return ""
+    try:
+        posted = datetime.fromisoformat(latest_signal_time)
+        if posted.tzinfo is None:
+            posted = posted.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - posted).total_seconds() / 3600
+        stale_threshold = 4 if trade_type == "day" else 48
+        age_str = f"{int(age_hours)}h ago" if age_hours < 24 else f"{age_hours/24:.1f}d ago"
+        stale = age_hours > stale_threshold
+        return f"{'⚠️ Stale · ' if stale else ''}{age_str}"
+    except Exception:
+        return ""
+
+
+def _rr_and_size(entry: float, target: float, stop: float) -> str:
+    risk = entry - stop
+    reward = target - entry
+    if risk <= 0:
+        return ""
+    rr = reward / risk
+    shares = int((_ACCOUNT_SIZE * _RISK_PER_TRADE_PCT) / risk) if risk > 0 else 0
+    return f"R:R 1:{rr:.1f} · Size ~{shares} shares at 1% risk"
+
+
+def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -> str:
     today = date.today().strftime("%b %d, %Y")
     lines = [f"📊 <b>Daily Trading Brief — {today}</b>\n"]
 
-    if signals:
+    # Market sentiment header
+    sentiment = mctx.market_sentiment()
+    if sentiment["warning"]:
+        lines.append(f"⚠️ <b>{sentiment['warning']}</b>")
+        if sentiment["vix"] is not None:
+            lines.append(f"   VIX: {sentiment['vix']:.1f} — elevated fear, reduce position sizes\n")
+        else:
+            lines.append("")
+    elif sentiment["regime"] == "bull":
+        spy_str = f"SPY {sentiment['spy_change']*100:+.1f}%" if sentiment["spy_change"] is not None else ""
+        qqq_str = f"QQQ {sentiment['qqq_change']*100:+.1f}%" if sentiment["qqq_change"] is not None else ""
+        index_str = " · ".join(filter(None, [spy_str, qqq_str]))
+        lines.append(f"🟩 Market tailwind: {index_str}\n")
+
+    # Sentiment score modifier for confidence
+    sent_score = sentiment["sentiment_score"]  # [-1, +1]
+
+    # Build expert lookup
+    expert_map = {e["handle"]: e for e in expert_scores}
+
+    def _confidence(s: dict) -> tuple[str, float]:
+        handles = [h.strip() for h in (s.get("experts") or "").split(",") if h.strip()]
+        score = 0.0
+        proven_count = 0
+        for h in handles:
+            e = expert_map.get(h)
+            if e and e["total"] >= _PROVEN_MIN_TRADES and e["expectancy"] > _PROVEN_MIN_EXPECTANCY:
+                score += max(e["expectancy"], 0.01)
+                proven_count += 1
+            else:
+                score += 0.001
+        # Apply market sentiment modifier: bear reduces score, bull boosts
+        score = score * (1.0 + sent_score * 0.3)
+        tier = "HIGH" if proven_count >= 1 else ("MEDIUM" if handles else "LOW")
+        # In a bear market, MEDIUM signals are demoted if no proven expert
+        if tier == "MEDIUM" and sentiment["regime"] == "bear":
+            tier = "LOW"
+        return tier, score
+
+    # Sort signals: HIGH first, then MEDIUM; drop LOW
+    tiered = []
+    for s in signals:
+        tier, score = _confidence(s)
+        if tier != "LOW":
+            tiered.append((tier, score, s))
+    tiered.sort(key=lambda x: (0 if x[0] == "HIGH" else 1, -x[1]))
+
+    if tiered:
         lines.append("🏦 <b>Stocks to Watch</b>")
-        for s in signals:
+        for tier, score, s in tiered:
             ticker = s["ticker"]
             day = s.get("day_count") or 0
             swing = s.get("swing_count") or 0
-            trade_label = "📅 Day" if day >= swing else "📆 Swing"
+            trade_type = "day" if day >= swing else "swing"
+            trade_label = "📅 Day" if trade_type == "day" else "📆 Swing"
+            tier_icon = "🔥" if tier == "HIGH" else "🔵"
             n_experts = s["expert_count"]
 
-            # Fetch live price
-            price = _fetch_price(ticker)
+            ctx = mctx.ticker_context(ticker)
+            entry = _fetch_price(ticker)
             avg_target = s.get("avg_target")
             ta_notes = _dedup_ta_notes(s.get("all_ta_notes"))
 
-            price_str = f"${price:.2f}" if price else "N/A"
-            if price and avg_target and avg_target > price:
-                gain_pct = (avg_target - price) / price * 100
+            entry_str = f"${entry:.2f}" if entry else "N/A"
+            target_str = ""
+            rr_str = ""
+            if entry and avg_target and avg_target > entry:
+                gain_pct = (avg_target - entry) / entry * 100
                 target_str = f"→ ${avg_target:.2f} (+{gain_pct:.1f}%)"
-            elif avg_target:
-                target_str = f"→ ${avg_target:.2f}"
-            else:
-                target_str = ""
+                stop_price = entry * 0.95
+                rr_str = _rr_and_size(entry, avg_target, stop_price)
 
-            header = f"  🟢 <b>${ticker}</b> — {n_experts} expert(s) · {trade_label}"
-            price_line = f"     Entry: {price_str}"
+            # Intraday context
+            ctx_parts = []
+            if ctx["change_pct"] is not None:
+                ctx_parts.append(f"{ctx['change_pct']*100:+.1f}% today")
+            if ctx["volume_ratio"] is not None:
+                ctx_parts.append(f"Vol {ctx['volume_ratio']:.1f}× avg")
+            ctx_str = " · ".join(ctx_parts)
+
+            # Ticker paper history
+            hist = store.get_ticker_paper_history(ticker)
+            hist_str = ""
+            if hist and hist["total"]:
+                hist_str = (
+                    f"📊 {hist['total']} calls · {hist['wins']}W/{hist['losses']}L · "
+                    f"avg {hist['avg_pnl_pct']*100:+.1f}%"
+                )
+
+            age_str = _signal_age_label(s.get("latest_signal_time"), trade_type)
+
+            lines.append(
+                f"  {tier_icon} <b>${ticker}</b> — {n_experts} expert(s) · {trade_label} · Score {score:.3f}"
+            )
+            price_line = f"     Entry: {entry_str}"
             if target_str:
                 price_line += f"  Target: {target_str}"
-            lines.append(header)
             lines.append(price_line)
+            if rr_str:
+                lines.append(f"     {rr_str}")
+            if ctx_str:
+                lines.append(f"     {ctx_str}")
+            if hist_str:
+                lines.append(f"     {hist_str}")
             if ta_notes:
                 lines.append(f"     <i>{ta_notes}</i>")
+            if age_str:
+                lines.append(f"     🕐 {age_str}")
             lines.append("")
     else:
-        lines.append("<i>No significant stock signals found in the last 5 days.</i>\n")
+        if sentiment["regime"] == "bear":
+            lines.append("<i>No HIGH-confidence signals — bear market filter active.</i>\n")
+        else:
+            lines.append("<i>No validated signals found.</i>\n")
 
-    # Expert P&L leaderboard
+    # Expert leaderboard
     if expert_scores:
-        lines.append("🏆 <b>Expert Performance</b> <i>(paper trades · OHLC-verified)</i>")
+        lines.append("🏆 <b>Expert Performance</b> <i>(OHLC-verified paper trades)</i>")
         for e in expert_scores[:5]:
             win_rate = int(e["win_rate"] * 100)
             exp = e["expectancy"] * 100
@@ -110,7 +220,6 @@ class BriefGenerator:
         self.scorer = scorer
 
     def _get_signals(self) -> list:
-        """Fetch signals, expanding lookback window until we have >= _MIN_SIGNALS tickers."""
         for hours in _LOOKBACK_STEPS:
             signals = self.store.get_stock_signals_for_brief(
                 lookback_hours=hours,
@@ -133,7 +242,19 @@ class BriefGenerator:
             except Exception as e:
                 logger.warning("Expert scoring failed: %s", e)
 
-        text = _build_brief(signals, expert_scores)
+        mctx.clear_cache()
+        text = _build_brief(signals, expert_scores, self.store)
+
+        # Portfolio summary
+        summary = self.store.get_portfolio_summary()
+        if summary.get("total"):
+            cumulative = (summary.get("cumulative_pnl") or 0) * 100
+            sign = "+" if cumulative >= 0 else ""
+            text += (
+                f"\n📈 <b>Portfolio:</b> {summary['total']} trades · "
+                f"{summary.get('wins', 0)}W/{summary.get('losses', 0)}L/"
+                f"{summary.get('expired', 0)}E · cumulative {sign}{cumulative:.1f}%"
+            )
 
         expert_count = self.store.get_expert_count()
         tweet_count = self.store.get_tweet_count_24h()

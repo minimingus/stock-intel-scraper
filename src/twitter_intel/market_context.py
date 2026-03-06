@@ -78,6 +78,103 @@ def ticker_context(ticker: str) -> dict:
     return result.copy()
 
 
+_SENTIMENT_CACHE: dict = {}
+_VIX_FEAR_THRESHOLD = 25.0
+_VIX_CALM_THRESHOLD = 15.0
+
+
+def market_sentiment() -> dict:
+    """
+    Composite market sentiment from SPY, QQQ, and VIX.
+    Returns:
+        spy_change: SPY daily % change
+        qqq_change: QQQ daily % change
+        vix: current VIX level
+        regime: 'bull' | 'bear' | 'neutral'
+        sentiment_score: float in [-1.0, +1.0], positive = bullish
+        warning: str | None — human-readable caution message if bearish
+    """
+    if _SENTIMENT_CACHE:
+        return _SENTIMENT_CACHE.copy()
+
+    def _pct_change(ticker: str) -> float | None:
+        try:
+            hist = yf.Ticker(ticker).history(period="5d", interval="1d", auto_adjust=True)
+            if len(hist) < 2:
+                return None
+            prev = float(hist["Close"].iloc[-2])
+            last = float(hist["Close"].iloc[-1])
+            return (last - prev) / prev
+        except Exception:
+            return None
+
+    def _vix() -> float | None:
+        try:
+            hist = yf.Ticker("^VIX").history(period="2d", interval="1d")
+            if hist.empty:
+                return None
+            return float(hist["Close"].iloc[-1])
+        except Exception:
+            return None
+
+    spy = _pct_change("SPY")
+    qqq = _pct_change("QQQ")
+    vix = _vix()
+
+    # Score components (each in [-1, +1] range)
+    spy_score = max(-1.0, min(1.0, (spy or 0) / 0.02))    # ±2% = ±1.0
+    qqq_score = max(-1.0, min(1.0, (qqq or 0) / 0.02))
+    vix_score = 0.0
+    if vix is not None:
+        if vix >= _VIX_FEAR_THRESHOLD:
+            vix_score = -min(1.0, (vix - _VIX_FEAR_THRESHOLD) / 15.0)
+        elif vix <= _VIX_CALM_THRESHOLD:
+            vix_score = +min(0.3, (_VIX_CALM_THRESHOLD - vix) / 10.0)
+
+    sentiment_score = round((spy_score * 0.4 + qqq_score * 0.4 + vix_score * 0.2), 3)
+
+    # Regime determination
+    bear_conditions = (
+        (spy is not None and spy <= -0.01) or
+        (qqq is not None and qqq <= -0.01) or
+        (vix is not None and vix >= _VIX_FEAR_THRESHOLD)
+    )
+    bull_conditions = (
+        (spy is not None and spy >= 0.005) and
+        (qqq is not None and qqq >= 0.005) and
+        (vix is None or vix < _VIX_FEAR_THRESHOLD)
+    )
+
+    if bear_conditions:
+        regime = "bear"
+    elif bull_conditions:
+        regime = "bull"
+    else:
+        regime = "neutral"
+
+    # Warning message
+    warning_parts = []
+    if spy is not None and spy <= -0.01:
+        warning_parts.append(f"SPY {spy*100:+.1f}%")
+    if qqq is not None and qqq <= -0.01:
+        warning_parts.append(f"QQQ {qqq*100:+.1f}%")
+    if vix is not None and vix >= _VIX_FEAR_THRESHOLD:
+        warning_parts.append(f"VIX {vix:.0f}")
+    warning = "Market weakness: " + " · ".join(warning_parts) + " — tighten stops" if warning_parts else None
+
+    result = {
+        "spy_change": spy,
+        "qqq_change": qqq,
+        "vix": vix,
+        "regime": regime,
+        "sentiment_score": sentiment_score,
+        "warning": warning,
+    }
+    _SENTIMENT_CACHE.update(result)
+    return result.copy()
+
+
 def clear_cache():
     _spy_cache.clear()
     _ticker_cache.clear()
+    _SENTIMENT_CACHE.clear()
