@@ -57,6 +57,12 @@ class TwitterIntelStore:
                 days_held         REAL,
                 UNIQUE(tweet_id, ticker, expert_handle)
             );
+            CREATE TABLE IF NOT EXISTS alerts_sent (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker     TEXT NOT NULL,
+                sent_at    TEXT NOT NULL,
+                expert_handles TEXT NOT NULL
+            );
         """)
         # Migrate existing DBs
         for migration in [
@@ -67,6 +73,7 @@ class TwitterIntelStore:
             "ALTER TABLE paper_trades ADD COLUMN max_gain_pct REAL",
             "ALTER TABLE paper_trades ADD COLUMN max_drawdown_pct REAL",
             "ALTER TABLE paper_trades ADD COLUMN days_held REAL",
+            "CREATE TABLE IF NOT EXISTS alerts_sent (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, sent_at TEXT NOT NULL, expert_handles TEXT NOT NULL)",
         ]:
             try:
                 self.conn.execute(migration)
@@ -134,7 +141,8 @@ class TwitterIntelStore:
                    SUM(CASE WHEN s.trade_type = 'day' THEN 1 ELSE 0 END) AS day_count,
                    SUM(CASE WHEN s.trade_type = 'swing' THEN 1 ELSE 0 END) AS swing_count,
                    AVG(CASE WHEN s.target_price > 0 THEN s.target_price ELSE NULL END) AS avg_target,
-                   GROUP_CONCAT(s.ta_notes, '|||') AS all_ta_notes
+                   GROUP_CONCAT(s.ta_notes, '|||') AS all_ta_notes,
+                   MAX(COALESCE(t.tweet_time, t.scraped_at)) AS latest_signal_time
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
@@ -249,6 +257,48 @@ class TwitterIntelStore:
         return self.conn.execute(
             "SELECT COUNT(*) FROM tweets WHERE scraped_at >= datetime('now', '-24 hours')"
         ).fetchone()[0]
+
+    def get_ticker_paper_history(self, ticker: str) -> dict | None:
+        """Win/loss/avg-pnl history for a specific ticker across all closed paper trades."""
+        row = self.conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN outcome = 'win'  THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END) AS losses,
+                   AVG(pnl_pct) AS avg_pnl_pct
+            FROM paper_trades
+            WHERE ticker = ? AND outcome != 'open'
+        """, (ticker,)).fetchone()
+        if not row or not row["total"]:
+            return None
+        return dict(row)
+
+    def get_portfolio_summary(self) -> dict:
+        """Cumulative P&L across all closed paper trades."""
+        row = self.conn.execute("""
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN outcome = 'win'      THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN outcome = 'loss'     THEN 1 ELSE 0 END) AS losses,
+                   SUM(CASE WHEN outcome = 'expired'  THEN 1 ELSE 0 END) AS expired,
+                   AVG(pnl_pct) AS avg_pnl_pct,
+                   SUM(pnl_pct) AS cumulative_pnl
+            FROM paper_trades WHERE outcome != 'open'
+        """).fetchone()
+        return dict(row) if row else {}
+
+    def was_alert_sent_recently(self, ticker: str, within_hours: int = 4) -> bool:
+        row = self.conn.execute("""
+            SELECT 1 FROM alerts_sent
+            WHERE ticker = ? AND sent_at >= datetime('now', ?)
+            LIMIT 1
+        """, (ticker, f"-{within_hours} hours")).fetchone()
+        return row is not None
+
+    def record_alert_sent(self, ticker: str, expert_handles: list):
+        self.conn.execute(
+            "INSERT INTO alerts_sent (ticker, sent_at, expert_handles) VALUES (?, ?, ?)",
+            (ticker, datetime.now(timezone.utc).isoformat(), ",".join(expert_handles)),
+        )
+        self.conn.commit()
 
     def close(self):
         self.conn.close()
