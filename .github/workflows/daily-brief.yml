@@ -2,9 +2,7 @@ name: Daily Trading Brief
 
 on:
   schedule:
-    - cron: "0 8 * * 1-5"    # 8am UTC Mon-Fri  (3am ET, pre-market)
-    - cron: "0 14 * * 1-5"   # 2pm UTC Mon-Fri  (9am ET, market open)
-    - cron: "0 20 * * 1-5"   # 8pm UTC Mon-Fri  (3pm ET, near close)
+    - cron: "0,30 * * * *"   # every 30 min (testing)
   workflow_dispatch:
 
 jobs:
