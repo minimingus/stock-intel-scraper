@@ -78,6 +78,82 @@ def ticker_context(ticker: str) -> dict:
     return result.copy()
 
 
+def earnings_proximity(ticker: str) -> int | None:
+    """Days until next earnings report. Returns None if unknown or far out."""
+    ticker = ticker.upper().strip()
+    key = f"earn_{ticker}"
+    if key in _ticker_cache:
+        return _ticker_cache[key]
+    result = None
+    try:
+        import pandas as pd
+        cal = yf.Ticker(ticker).calendar
+        if cal is not None and not (hasattr(cal, "empty") and cal.empty):
+            # yfinance returns calendar as a DataFrame or dict depending on version
+            if hasattr(cal, "columns"):
+                # DataFrame: earnings date is in columns or index
+                dates = [c for c in cal.columns if "Earnings" in str(c)]
+                if dates:
+                    earn_date = cal[dates[0]].iloc[0] if hasattr(cal[dates[0]], "iloc") else cal[dates[0]]
+                    if pd.notna(earn_date):
+                        from datetime import date as date_type
+                        days = (pd.Timestamp(earn_date).date() - date_type.today()).days
+                        result = max(0, days) if days <= 90 else None
+            elif isinstance(cal, dict):
+                earn_dates = cal.get("Earnings Date", [])
+                if earn_dates:
+                    first = earn_dates[0] if hasattr(earn_dates, "__iter__") else earn_dates
+                    if pd.notna(first):
+                        from datetime import date as date_type
+                        days = (pd.Timestamp(first).date() - date_type.today()).days
+                        result = max(0, days) if days <= 90 else None
+    except Exception as e:
+        logger.debug("Earnings fetch failed for %s: %s", ticker, e)
+    _ticker_cache[key] = result
+    return result
+
+
+def options_flow(ticker: str) -> dict | None:
+    """
+    Detect unusual bullish options activity via yfinance.
+    Returns dict with call_volume and max_vol_oi, or None if no unusual activity.
+    """
+    ticker = ticker.upper().strip()
+    key = f"flow_{ticker}"
+    if key in _ticker_cache:
+        return _ticker_cache[key]
+    result = None
+    try:
+        t = yf.Ticker(ticker)
+        exp_dates = t.options
+        if not exp_dates:
+            _ticker_cache[key] = None
+            return None
+        chain = t.option_chain(exp_dates[0])
+        calls = chain.calls
+        if calls.empty:
+            _ticker_cache[key] = None
+            return None
+        total_call_vol = int(calls["volume"].fillna(0).sum())
+        if total_call_vol < 500:
+            _ticker_cache[key] = None
+            return None
+        calls = calls.copy()
+        calls["vol_oi"] = calls["volume"].fillna(0) / (calls["openInterest"].fillna(0) + 1)
+        unusual = calls[calls["vol_oi"] > 3]
+        if unusual.empty:
+            _ticker_cache[key] = None
+            return None
+        result = {
+            "call_volume": total_call_vol,
+            "max_vol_oi": round(float(unusual["vol_oi"].max()), 1),
+        }
+    except Exception as e:
+        logger.debug("Options flow fetch failed for %s: %s", ticker, e)
+    _ticker_cache[key] = result
+    return result
+
+
 _SENTIMENT_CACHE: dict = {}
 _VIX_FEAR_THRESHOLD = 25.0
 _VIX_CALM_THRESHOLD = 15.0
