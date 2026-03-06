@@ -21,27 +21,26 @@ def _parse_created_at(s: str) -> str | None:
         return None
 
 
-def _bird_env() -> dict:
-    env = os.environ.copy()
-    # Ensure AUTH_TOKEN and CT0 are available
-    return env
+def _bird_cmd() -> str:
+    """Return path to bird Twitter CLI. Uses BIRD_BIN env var to avoid collision with
+    the system 'bird' routing daemon present on Linux."""
+    return os.environ.get("BIRD_BIN", "bird")
 
 
 def _fetch_tweets(handle: str, count: int) -> list:
     """Call bird user-tweets and return parsed tweet dicts."""
     try:
         result = subprocess.run(
-            ["bird", "user-tweets", handle, "-n", str(count), "--json", "--plain"],
+            [_bird_cmd(), "user-tweets", handle, "-n", str(count), "--json", "--plain"],
             capture_output=True,
             text=True,
             timeout=60,
-            env=_bird_env(),
+            env=os.environ.copy(),
         )
         if result.returncode != 0:
             logger.warning("bird failed for @%s: %s", handle, result.stderr.strip())
             return []
 
-        # Output starts with info lines before JSON array — find the JSON
         out = result.stdout
         json_start = out.find("[")
         if json_start == -1:

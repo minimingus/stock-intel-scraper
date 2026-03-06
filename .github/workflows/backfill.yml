@@ -11,7 +11,7 @@ on:
 jobs:
   backfill:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
 
     env:
       AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
@@ -29,7 +29,9 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Install bird CLI
-        run: npm install -g @steipete/bird
+        run: |
+          npm install -g @steipete/bird
+          echo "BIRD_BIN=$(npm config get prefix)/bin/bird" >> $GITHUB_ENV
 
       - name: Restore database
         uses: actions/cache/restore@v4
