@@ -81,6 +81,7 @@ def ticker_context(ticker: str) -> dict:
 _SENTIMENT_CACHE: dict = {}
 _VIX_FEAR_THRESHOLD = 25.0
 _VIX_CALM_THRESHOLD = 15.0
+_SENTIMENT_BEAR_THRESHOLD = -0.01  # -1% per index = bear signal
 
 
 def market_sentiment() -> dict:
@@ -135,8 +136,8 @@ def market_sentiment() -> dict:
 
     # Regime determination
     bear_conditions = (
-        (spy is not None and spy <= -0.01) or
-        (qqq is not None and qqq <= -0.01) or
+        (spy is not None and spy <= _SENTIMENT_BEAR_THRESHOLD) or
+        (qqq is not None and qqq <= _SENTIMENT_BEAR_THRESHOLD) or
         (vix is not None and vix >= _VIX_FEAR_THRESHOLD)
     )
     bull_conditions = (
@@ -154,9 +155,9 @@ def market_sentiment() -> dict:
 
     # Warning message
     warning_parts = []
-    if spy is not None and spy <= -0.01:
+    if spy is not None and spy <= _SENTIMENT_BEAR_THRESHOLD:
         warning_parts.append(f"SPY {spy*100:+.1f}%")
-    if qqq is not None and qqq <= -0.01:
+    if qqq is not None and qqq <= _SENTIMENT_BEAR_THRESHOLD:
         warning_parts.append(f"QQQ {qqq*100:+.1f}%")
     if vix is not None and vix >= _VIX_FEAR_THRESHOLD:
         warning_parts.append(f"VIX {vix:.0f}")

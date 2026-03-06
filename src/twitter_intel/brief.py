@@ -63,8 +63,8 @@ def _rr_and_size(entry: float, target: float, stop: float) -> str:
     if risk <= 0:
         return ""
     rr = reward / risk
-    shares = int((_ACCOUNT_SIZE * _RISK_PER_TRADE_PCT) / risk) if risk > 0 else 0
-    return f"R:R 1:{rr:.1f} · Size ~{shares} shares at 1% risk"
+    shares = int((_ACCOUNT_SIZE * _RISK_PER_TRADE_PCT) / risk)
+    return f"R:R 1:{rr:.1f} · Size ~{shares} shares (5% stop, 1% risk)"
 
 
 def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -> str:
@@ -155,9 +155,10 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
             hist = store.get_ticker_paper_history(ticker)
             hist_str = ""
             if hist and hist["total"]:
+                avg_pnl = (hist['avg_pnl_pct'] or 0) * 100
                 hist_str = (
                     f"📊 {hist['total']} calls · {hist['wins']}W/{hist['losses']}L · "
-                    f"avg {hist['avg_pnl_pct']*100:+.1f}%"
+                    f"avg {avg_pnl:+.1f}%"
                 )
 
             age_str = _signal_age_label(s.get("latest_signal_time"), trade_type)
@@ -242,18 +243,18 @@ class BriefGenerator:
             except Exception as e:
                 logger.warning("Expert scoring failed: %s", e)
 
-        mctx.clear_cache()
         text = _build_brief(signals, expert_scores, self.store)
+        mctx.clear_cache()
 
         # Portfolio summary
         summary = self.store.get_portfolio_summary()
         if summary.get("total"):
-            cumulative = (summary.get("cumulative_pnl") or 0) * 100
+            cumulative = (summary.get("avg_pnl_pct") or 0) * 100
             sign = "+" if cumulative >= 0 else ""
             text += (
                 f"\n📈 <b>Portfolio:</b> {summary['total']} trades · "
                 f"{summary.get('wins', 0)}W/{summary.get('losses', 0)}L/"
-                f"{summary.get('expired', 0)}E · cumulative {sign}{cumulative:.1f}%"
+                f"{summary.get('expired', 0)}E · avg {sign}{cumulative:.1f}% per trade"
             )
 
         expert_count = self.store.get_expert_count()
