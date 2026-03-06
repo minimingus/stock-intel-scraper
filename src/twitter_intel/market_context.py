@@ -1,5 +1,4 @@
 import logging
-from functools import lru_cache
 import pandas as pd
 import yfinance as yf
 
@@ -9,13 +8,18 @@ _SPY_BEAR_THRESHOLD = -0.015   # -1.5% = warning
 _SPY_BULL_THRESHOLD = +0.005   # +0.5% = green
 
 
-@lru_cache(maxsize=1)
+_spy_cache: dict = {}
+
+
 def spy_regime() -> dict:
     """Return SPY's daily % change and a regime label: 'bull', 'bear', or 'neutral'."""
+    if _spy_cache:
+        return _spy_cache.copy()
+    _neutral = {"change_pct": 0.0, "regime": "neutral"}
     try:
         hist = yf.Ticker("SPY").history(period="5d", interval="1d", auto_adjust=True)
         if len(hist) < 2:
-            return {"change_pct": 0.0, "regime": "neutral"}.copy()
+            return _neutral.copy()
         prev_close = float(hist["Close"].iloc[-2])
         last_close = float(hist["Close"].iloc[-1])
         change_pct = (last_close - prev_close) / prev_close
@@ -25,10 +29,12 @@ def spy_regime() -> dict:
             regime = "bull"
         else:
             regime = "neutral"
-        return {"change_pct": change_pct, "regime": regime}.copy()
+        result = {"change_pct": change_pct, "regime": regime}
+        _spy_cache.update(result)
+        return result.copy()
     except Exception as e:
         logger.debug("SPY fetch failed: %s", e)
-        return {"change_pct": 0.0, "regime": "neutral"}.copy()
+        return _neutral.copy()
 
 
 _ticker_cache: dict = {}
@@ -73,5 +79,5 @@ def ticker_context(ticker: str) -> dict:
 
 
 def clear_cache():
-    spy_regime.cache_clear()
+    _spy_cache.clear()
     _ticker_cache.clear()
