@@ -39,19 +39,22 @@ class TwitterIntelStore:
                 ta_notes     TEXT
             );
             CREATE TABLE IF NOT EXISTS paper_trades (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                ticker        TEXT NOT NULL,
-                expert_handle TEXT NOT NULL,
-                tweet_id      TEXT NOT NULL,
-                entry_price   REAL NOT NULL,
-                target_price  REAL,
-                stop_price    REAL NOT NULL,
-                signal_time   TEXT NOT NULL,
-                opened_at     TEXT NOT NULL DEFAULT (datetime('now')),
-                closed_at     TEXT,
-                exit_price    REAL,
-                outcome       TEXT NOT NULL DEFAULT 'open',
-                pnl_pct       REAL,
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker            TEXT NOT NULL,
+                expert_handle     TEXT NOT NULL,
+                tweet_id          TEXT NOT NULL,
+                entry_price       REAL NOT NULL,
+                target_price      REAL,
+                stop_price        REAL NOT NULL,
+                signal_time       TEXT NOT NULL,
+                opened_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at         TEXT,
+                exit_price        REAL,
+                outcome           TEXT NOT NULL DEFAULT 'open',
+                pnl_pct           REAL,
+                max_gain_pct      REAL,
+                max_drawdown_pct  REAL,
+                days_held         REAL,
                 UNIQUE(tweet_id, ticker, expert_handle)
             );
         """)
@@ -61,6 +64,9 @@ class TwitterIntelStore:
             "ALTER TABLE tweets ADD COLUMN tweet_time TEXT",
             "ALTER TABLE signals ADD COLUMN target_price REAL",
             "ALTER TABLE signals ADD COLUMN ta_notes TEXT",
+            "ALTER TABLE paper_trades ADD COLUMN max_gain_pct REAL",
+            "ALTER TABLE paper_trades ADD COLUMN max_drawdown_pct REAL",
+            "ALTER TABLE paper_trades ADD COLUMN days_held REAL",
         ]:
             try:
                 self.conn.execute(migration)
@@ -189,21 +195,32 @@ class TwitterIntelStore:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def close_paper_trade(self, trade_id: int, exit_price: float, outcome: str, pnl_pct: float):
+    def close_paper_trade(self, trade_id: int, exit_price: float, outcome: str,
+                          pnl_pct: float, max_gain_pct: float = None,
+                          max_drawdown_pct: float = None, days_held: float = None):
         self.conn.execute(
-            "UPDATE paper_trades SET closed_at = ?, exit_price = ?, outcome = ?, pnl_pct = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), exit_price, outcome, pnl_pct, trade_id),
+            "UPDATE paper_trades SET closed_at = ?, exit_price = ?, outcome = ?, pnl_pct = ?, "
+            "max_gain_pct = ?, max_drawdown_pct = ?, days_held = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), exit_price, outcome, pnl_pct,
+             max_gain_pct, max_drawdown_pct, days_held, trade_id),
         )
         self.conn.commit()
 
     def get_expert_paper_scores(self) -> list:
-        """Per-expert P&L stats from closed paper trades. Requires >= 3 closed trades."""
+        """Per-expert trading stats from closed paper trades. Requires >= 3 closed trades."""
         rows = self.conn.execute("""
             SELECT expert_handle,
                    COUNT(*) AS total,
-                   SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN outcome = 'win'  THEN 1 ELSE 0 END) AS wins,
                    SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END) AS losses,
-                   AVG(pnl_pct) AS avg_pnl_pct
+                   AVG(pnl_pct) AS avg_pnl_pct,
+                   AVG(CASE WHEN outcome = 'win'  THEN pnl_pct END) AS avg_win_pct,
+                   AVG(CASE WHEN outcome = 'loss' THEN pnl_pct END) AS avg_loss_pct,
+                   AVG(max_gain_pct)     AS avg_max_gain,
+                   AVG(max_drawdown_pct) AS avg_max_drawdown,
+                   AVG(days_held)        AS avg_days_held,
+                   SUM(CASE WHEN pnl_pct > 0 THEN pnl_pct  ELSE 0   END) AS gross_win,
+                   SUM(CASE WHEN pnl_pct < 0 THEN -pnl_pct ELSE 0   END) AS gross_loss
             FROM paper_trades
             WHERE outcome != 'open'
             GROUP BY expert_handle

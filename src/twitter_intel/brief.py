@@ -78,15 +78,18 @@ def _build_brief(signals: list, expert_scores: list) -> str:
 
     # Expert P&L leaderboard
     if expert_scores:
-        lines.append("🏆 <b>Expert Performance</b> <i>(simulated paper trades)</i>")
+        lines.append("🏆 <b>Expert Performance</b> <i>(paper trades · OHLC-verified)</i>")
         for e in expert_scores[:5]:
             win_rate = int(e["win_rate"] * 100)
-            avg_pnl = e["avg_pnl_pct"] * 100
-            sign = "+" if avg_pnl >= 0 else ""
+            exp = e["expectancy"] * 100
+            pf = e["profit_factor"]
+            days = e["avg_days_held"]
             bar = "▓" * (win_rate // 10) + "░" * (10 - win_rate // 10)
+            exp_sign = "+" if exp >= 0 else ""
             lines.append(
-                f"  @{e['handle']} {bar} {win_rate}% wins · "
-                f"avg {sign}{avg_pnl:.1f}% · {e['total']} trades"
+                f"  @{e['handle']} {bar} {win_rate}% · "
+                f"E={exp_sign}{exp:.1f}% · PF={pf:.2f} · "
+                f"{e['wins']}W/{e['losses']}L · {days:.1f}d avg"
             )
         lines.append("")
 
