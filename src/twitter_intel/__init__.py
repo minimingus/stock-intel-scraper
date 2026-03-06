@@ -4,6 +4,7 @@ from .extractor import SignalExtractor
 from .discovery import ExpertDiscovery
 from .brief import BriefGenerator
 from .scorer import ExpertScorer
+from . import paper_trader
 
 __all__ = [
     "TwitterIntelStore",
@@ -12,4 +13,5 @@ __all__ = [
     "ExpertDiscovery",
     "BriefGenerator",
     "ExpertScorer",
+    "paper_trader",
 ]

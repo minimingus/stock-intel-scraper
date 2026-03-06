@@ -5,7 +5,7 @@ from .store import TwitterIntelStore
 
 logger = logging.getLogger(__name__)
 
-# Common crypto tickers to distinguish from stock tickers
+# Common crypto tickers — used only to EXCLUDE them from stock signals
 _CRYPTO = {
     "BTC", "ETH", "SOL", "BNB", "XRP", "ADA", "AVAX", "DOGE", "MATIC",
     "DOT", "LINK", "UNI", "ATOM", "LTC", "BCH", "XLM", "ALGO", "VET",
@@ -42,6 +42,12 @@ _SWING = re.compile(
     re.IGNORECASE,
 )
 
+# Target price patterns: "target $180", "PT $200", "TP 195", "price target: 210.50"
+_TARGET_PRICE = re.compile(
+    r"(?:target|pt|tp|take[\s-]?profit|price[\s-]?target)[:\s]+\$?(\d{1,6}(?:\.\d{1,2})?)",
+    re.IGNORECASE,
+)
+
 
 def _sentiment(text: str) -> str:
     bulls = len(_BULLISH.findall(text))
@@ -56,45 +62,47 @@ def _sentiment(text: str) -> str:
 def _trade_type(text: str) -> str:
     day = len(_DAY_TRADE.findall(text))
     swing = len(_SWING.findall(text))
-    if day > swing:
-        return "day"
-    if swing > day:
-        return "swing"
-    return "day"  # default to day trade when ambiguous
+    return "swing" if swing > day else "day"
 
 
-def _extract_tickers(text: str) -> list[dict]:
-    """Return list of {ticker, asset_type} from cashtags, hashtag-tickers, and bare crypto names."""
+def _extract_target_price(text: str) -> float | None:
+    m = _TARGET_PRICE.search(text)
+    if m:
+        try:
+            return float(m.group(1))
+        except ValueError:
+            pass
+    return None
+
+
+def _extract_ta_notes(text: str) -> str:
+    """Extract up to 2 short TA context snippets from tweet text."""
+    notes = []
+    for match in _TA_OR_PUMP.finditer(text):
+        start = max(0, match.start() - 8)
+        end = min(len(text), match.end() + 35)
+        snippet = text[start:end].strip().replace("\n", " ")
+        notes.append(snippet)
+    # Deduplicate by first 20 chars
+    seen: set = set()
+    unique = []
+    for n in notes:
+        key = n.lower()[:20]
+        if key not in seen:
+            seen.add(key)
+            unique.append(n)
+    return "; ".join(unique[:2])[:120]
+
+
+def _extract_stock_tickers(text: str) -> list[str]:
+    """Return stock cashtags only (no crypto)."""
+    seen: set = set()
     results = []
-    seen = set()
-
-    # Cashtags: $BTC, $NVDA
     for m in re.finditer(r"\$([A-Z]{1,6})", text):
         ticker = m.group(1)
-        if ticker in seen:
-            continue
-        seen.add(ticker)
-        asset_type = "crypto" if ticker in _CRYPTO else "stock"
-        results.append({"ticker": ticker, "asset_type": asset_type})
-
-    # Hashtag crypto tickers: #BTC, #XRP, #ETH
-    for m in re.finditer(r"#([A-Za-z]{1,6})\b", text):
-        ticker = m.group(1).upper()
-        if ticker in seen or ticker not in _CRYPTO:
-            continue
-        seen.add(ticker)
-        results.append({"ticker": ticker, "asset_type": "crypto"})
-
-    # Bare crypto names without $ (e.g. "Bitcoin", "Ethereum", "Solana")
-    crypto_aliases = {
-        "BITCOIN": "BTC", "ETHEREUM": "ETH", "SOLANA": "SOL",
-        "CARDANO": "ADA", "RIPPLE": "XRP", "DOGECOIN": "DOGE",
-    }
-    for word, ticker in crypto_aliases.items():
-        if re.search(rf"\b{word}\b", text, re.IGNORECASE) and ticker not in seen:
+        if ticker not in seen and ticker not in _CRYPTO:
             seen.add(ticker)
-            results.append({"ticker": ticker, "asset_type": "crypto"})
-
+            results.append(ticker)
     return results
 
 
@@ -109,26 +117,28 @@ class SignalExtractor:
             text = tweet.get("text", "")
             tweet_id = tweet["tweet_id"]
 
-            # For stocks: only process tweets with TA or pump signals
-            has_ta = bool(_TA_OR_PUMP.search(text))
+            if not _TA_OR_PUMP.search(text):
+                continue
+
             sentiment = _sentiment(text)
             trade_type = _trade_type(text)
+            target_price = _extract_target_price(text)
+            ta_notes = _extract_ta_notes(text)
 
-            for item in _extract_tickers(text):
-                # Skip non-TA/pump stock tweets
-                if item["asset_type"] == "stock" and not has_ta:
-                    continue
+            for ticker in _extract_stock_tickers(text):
                 try:
                     self.store.insert_signal(
                         tweet_id=tweet_id,
-                        ticker=item["ticker"],
-                        asset_type=item["asset_type"],
+                        ticker=ticker,
+                        asset_type="stock",
                         sentiment=sentiment,
                         trade_type=trade_type,
+                        target_price=target_price,
+                        ta_notes=ta_notes,
                     )
                     count += 1
                 except Exception as e:
-                    logger.warning("Skipping signal %s: %s", item, e)
+                    logger.warning("Skipping signal %s: %s", ticker, e)
         return count
 
     def run(self) -> int:

@@ -34,13 +34,33 @@ class TwitterIntelStore:
                 asset_type   TEXT NOT NULL,
                 sentiment    TEXT NOT NULL,
                 trade_type   TEXT NOT NULL DEFAULT 'day',
-                extracted_at TEXT NOT NULL
+                extracted_at TEXT NOT NULL,
+                target_price REAL,
+                ta_notes     TEXT
+            );
+            CREATE TABLE IF NOT EXISTS paper_trades (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker        TEXT NOT NULL,
+                expert_handle TEXT NOT NULL,
+                tweet_id      TEXT NOT NULL,
+                entry_price   REAL NOT NULL,
+                target_price  REAL,
+                stop_price    REAL NOT NULL,
+                signal_time   TEXT NOT NULL,
+                opened_at     TEXT NOT NULL DEFAULT (datetime('now')),
+                closed_at     TEXT,
+                exit_price    REAL,
+                outcome       TEXT NOT NULL DEFAULT 'open',
+                pnl_pct       REAL,
+                UNIQUE(tweet_id, ticker, expert_handle)
             );
         """)
         # Migrate existing DBs
         for migration in [
             "ALTER TABLE signals ADD COLUMN trade_type TEXT NOT NULL DEFAULT 'day'",
             "ALTER TABLE tweets ADD COLUMN tweet_time TEXT",
+            "ALTER TABLE signals ADD COLUMN target_price REAL",
+            "ALTER TABLE signals ADD COLUMN ta_notes TEXT",
         ]:
             try:
                 self.conn.execute(migration)
@@ -89,36 +109,40 @@ class TwitterIntelStore:
         """).fetchall()
         return [dict(r) for r in rows]
 
-    def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str, trade_type: str = "day"):
+    def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str,
+                      trade_type: str = "day", target_price: float = None, ta_notes: str = None):
         self.conn.execute(
-            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (tweet_id, ticker, asset_type, sentiment, trade_type, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at, target_price, ta_notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (tweet_id, ticker, asset_type, sentiment, trade_type,
+             datetime.now(timezone.utc).isoformat(), target_price, ta_notes),
         )
         self.conn.commit()
 
-    def get_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
-        """Ranked signals: tickers mentioned by most distinct experts in the window."""
+    def get_stock_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
+        """Ranked stock-only bullish signals aggregated by ticker."""
         rows = self.conn.execute("""
-            SELECT s.ticker, s.asset_type,
+            SELECT s.ticker,
                    COUNT(DISTINCT t.handle) AS expert_count,
                    GROUP_CONCAT(DISTINCT t.handle) AS experts,
-                   SUM(CASE WHEN s.sentiment = 'bullish' THEN 1 ELSE 0 END) AS bullish_count,
-                   SUM(CASE WHEN s.sentiment = 'bearish' THEN 1 ELSE 0 END) AS bearish_count,
                    SUM(CASE WHEN s.trade_type = 'day' THEN 1 ELSE 0 END) AS day_count,
-                   SUM(CASE WHEN s.trade_type = 'swing' THEN 1 ELSE 0 END) AS swing_count
+                   SUM(CASE WHEN s.trade_type = 'swing' THEN 1 ELSE 0 END) AS swing_count,
+                   AVG(CASE WHEN s.target_price > 0 THEN s.target_price ELSE NULL END) AS avg_target,
+                   GROUP_CONCAT(s.ta_notes, '|||') AS all_ta_notes
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
               AND s.sentiment = 'bullish'
-            GROUP BY s.ticker, s.asset_type
+              AND s.asset_type = 'stock'
+            GROUP BY s.ticker
             HAVING COUNT(DISTINCT t.handle) >= ?
             ORDER BY expert_count DESC
+            LIMIT 20
         """, (f"-{lookback_hours} hours", min_expert_mentions)).fetchall()
         return [dict(r) for r in rows]
 
     def get_signals_with_handles(self, lookback_hours: int = 168) -> list:
-        """Return bullish signals with expert handle and actual tweet timestamp."""
+        """Return bullish stock signals with expert handle and actual tweet timestamp."""
         rows = self.conn.execute("""
             SELECT s.ticker, s.asset_type, t.handle,
                    COALESCE(t.tweet_time, t.scraped_at) AS post_time
@@ -126,8 +150,71 @@ class TwitterIntelStore:
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
               AND s.sentiment = 'bullish'
+              AND s.asset_type = 'stock'
         """, (f"-{lookback_hours} hours",)).fetchall()
         return [dict(r) for r in rows]
+
+    def get_new_signal_trades(self) -> list:
+        """Return bullish stock signals that have no paper trade opened yet."""
+        rows = self.conn.execute("""
+            SELECT s.id AS signal_id, s.ticker, s.target_price, s.ta_notes,
+                   t.handle, t.tweet_id,
+                   COALESCE(t.tweet_time, t.scraped_at) AS signal_time
+            FROM signals s
+            JOIN tweets t ON t.tweet_id = s.tweet_id
+            LEFT JOIN paper_trades pt
+                   ON pt.tweet_id = s.tweet_id
+                  AND pt.ticker = s.ticker
+                  AND pt.expert_handle = t.handle
+            WHERE s.sentiment = 'bullish'
+              AND s.asset_type = 'stock'
+              AND pt.id IS NULL
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def open_paper_trade(self, ticker: str, expert_handle: str, tweet_id: str,
+                         entry_price: float, target_price: float, stop_price: float,
+                         signal_time: str):
+        self.conn.execute(
+            "INSERT OR IGNORE INTO paper_trades "
+            "(ticker, expert_handle, tweet_id, entry_price, target_price, stop_price, signal_time) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (ticker, expert_handle, tweet_id, entry_price, target_price, stop_price, signal_time),
+        )
+        self.conn.commit()
+
+    def get_open_paper_trades(self) -> list:
+        rows = self.conn.execute(
+            "SELECT * FROM paper_trades WHERE outcome = 'open'"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def close_paper_trade(self, trade_id: int, exit_price: float, outcome: str, pnl_pct: float):
+        self.conn.execute(
+            "UPDATE paper_trades SET closed_at = ?, exit_price = ?, outcome = ?, pnl_pct = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), exit_price, outcome, pnl_pct, trade_id),
+        )
+        self.conn.commit()
+
+    def get_expert_paper_scores(self) -> list:
+        """Per-expert P&L stats from closed paper trades. Requires >= 3 closed trades."""
+        rows = self.conn.execute("""
+            SELECT expert_handle,
+                   COUNT(*) AS total,
+                   SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) AS wins,
+                   SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END) AS losses,
+                   AVG(pnl_pct) AS avg_pnl_pct
+            FROM paper_trades
+            WHERE outcome != 'open'
+            GROUP BY expert_handle
+            HAVING COUNT(*) >= 3
+            ORDER BY avg_pnl_pct DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    # kept for compatibility with old scorer
+    def get_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
+        return self.get_stock_signals_for_brief(lookback_hours, min_expert_mentions)
 
     def prune_old_tweets(self, days: int = 7):
         self.conn.execute(
