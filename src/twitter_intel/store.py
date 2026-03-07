@@ -85,6 +85,7 @@ class TwitterIntelStore:
             "ALTER TABLE signals ADD COLUMN entry_price_suggested REAL",
             "ALTER TABLE signals ADD COLUMN stop_price_suggested REAL",
             "ALTER TABLE signals ADD COLUMN specificity INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE paper_trades ADD COLUMN trade_type TEXT NOT NULL DEFAULT 'swing'",
         ]:
             try:
                 self.conn.execute(migration)
@@ -245,7 +246,7 @@ class TwitterIntelStore:
         """Return bullish stock signals that have no paper trade opened yet."""
         rows = self.conn.execute("""
             SELECT s.id AS signal_id, s.ticker, s.target_price, s.ta_notes,
-                   s.entry_price_suggested, s.stop_price_suggested,
+                   s.entry_price_suggested, s.stop_price_suggested, s.trade_type,
                    t.handle, t.tweet_id,
                    COALESCE(t.tweet_time, t.scraped_at) AS signal_time
             FROM signals s
@@ -280,12 +281,14 @@ class TwitterIntelStore:
 
     def open_paper_trade(self, ticker: str, expert_handle: str, tweet_id: str,
                          entry_price: float, target_price: float, stop_price: float,
-                         signal_time: str):
+                         signal_time: str, trade_type: str = "swing"):
         self.conn.execute(
             "INSERT OR IGNORE INTO paper_trades "
-            "(ticker, expert_handle, tweet_id, entry_price, target_price, stop_price, signal_time) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (ticker, expert_handle, tweet_id, entry_price, target_price, stop_price, signal_time),
+            "(ticker, expert_handle, tweet_id, entry_price, target_price, stop_price, "
+            "signal_time, trade_type) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (ticker, expert_handle, tweet_id, entry_price, target_price,
+             stop_price, signal_time, trade_type),
         )
         self.conn.commit()
 

@@ -7,7 +7,7 @@ import yfinance as yf
 logger = logging.getLogger(__name__)
 
 _STOP_LOSS_PCT = 0.05   # 5% below entry = stop out
-_EXPIRE_DAYS = 5        # close as 'expired' if neither target nor stop hit within 5 days
+_DAY_TRADE_CLOSE_UTC = 21  # 4 PM ET in UTC
 
 
 def _to_yf_crypto_ticker(ticker: str) -> str:
@@ -102,6 +102,17 @@ def _atr_stop(ticker: str, entry: float) -> float:
         return entry * (1 - _STOP_LOSS_PCT)
 
 
+def _expiry_for_trade(trade_type: str, signal_dt: datetime) -> datetime:
+    """Return the expiry datetime for a trade based on its type.
+
+    Day trades expire at market close (21:00 UTC) on the signal day.
+    Swing trades expire 14 days from the signal.
+    """
+    if trade_type == "day":
+        return signal_dt.replace(hour=_DAY_TRADE_CLOSE_UTC, minute=0, second=0, microsecond=0)
+    return signal_dt + timedelta(days=14)
+
+
 def open_trades_for_new_signals(store) -> int:
     """Open paper trades for any bullish stock signals not yet tracked. Returns count opened."""
     new_signals = store.get_new_signal_trades()
@@ -154,6 +165,7 @@ def open_trades_for_new_signals(store) -> int:
 
         rr = (target - price) / (price - stop) if price > stop else None
 
+        trade_type = sig.get("trade_type", "swing")
         store.open_paper_trade(
             ticker=ticker,
             expert_handle=sig["handle"],
@@ -162,6 +174,7 @@ def open_trades_for_new_signals(store) -> int:
             target_price=target,
             stop_price=stop,
             signal_time=signal_time,
+            trade_type=trade_type,
         )
         rr_str = f" R:R 1:{rr:.1f}" if rr else ""
         logger.info(
@@ -267,7 +280,7 @@ def evaluate_open_trades(store) -> int:
             if price is None:
                 continue
             pnl_pct = (price - entry) / entry
-            if (now - trade_start) >= timedelta(days=_EXPIRE_DAYS):
+            if now >= _expiry_for_trade(trade.get("trade_type", "swing"), trade_start):
                 store.close_paper_trade(trade["id"], price, "expired", pnl_pct)
                 closed += 1
             continue
@@ -298,7 +311,7 @@ def evaluate_open_trades(store) -> int:
             outcome = "loss"
             exit_price = stop
             exit_time = stop_time
-        elif (now - trade_start) >= timedelta(days=_EXPIRE_DAYS):
+        elif now >= _expiry_for_trade(trade.get("trade_type", "swing"), trade_start):
             outcome = "expired"
             exit_price = float(hist["Close"].iloc[-1])
             exit_time = now
