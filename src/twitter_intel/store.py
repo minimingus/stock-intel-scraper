@@ -332,6 +332,16 @@ class TwitterIntelStore:
         """).fetchall()
         return [dict(r) for r in rows]
 
+    def get_expert_trades_for_scoring(self) -> list:
+        """Return individual closed trades with closed_at date for time-decay scoring."""
+        rows = self.conn.execute("""
+            SELECT expert_handle, outcome, pnl_pct, closed_at
+            FROM paper_trades
+            WHERE outcome != 'open' AND pnl_pct IS NOT NULL
+            ORDER BY expert_handle, closed_at DESC
+        """).fetchall()
+        return [dict(r) for r in rows]
+
     # kept for compatibility with old scorer
     def get_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
         return self.get_stock_signals_for_brief(lookback_hours, min_expert_mentions)

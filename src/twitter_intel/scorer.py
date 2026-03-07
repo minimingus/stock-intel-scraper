@@ -1,7 +1,19 @@
 import logging
 import math
+from collections import defaultdict
+from datetime import datetime, timezone
 
 from .store import TwitterIntelStore
+
+logger = logging.getLogger(__name__)
+
+_DECAY_HALFLIFE_DAYS = 90.0
+_DECAY_LAMBDA = math.log(2) / _DECAY_HALFLIFE_DAYS
+
+
+def _decay_weight(days_ago: float) -> float:
+    """Exponential decay weight. w=1.0 for today, w=0.5 at 90 days, w=0.125 at 270 days."""
+    return math.exp(-_DECAY_LAMBDA * days_ago)
 
 
 def _wilson_lower(wins: int, total: int, z: float = 1.96) -> float:
@@ -17,8 +29,6 @@ def _wilson_lower(wins: int, total: int, z: float = 1.96) -> float:
         - z * math.sqrt((p * (1 - p) + z**2 / (4 * total)) / total)
     ) / (1 + z**2 / total)
 
-logger = logging.getLogger(__name__)
-
 
 class ExpertScorer:
     def __init__(self, store: TwitterIntelStore, lookback_hours: int = 168):
@@ -27,51 +37,80 @@ class ExpertScorer:
 
     def score(self) -> list[dict]:
         """
-        Score experts based on closed paper trades.
-        Computes: win rate, expectancy, profit factor, avg days held.
+        Score experts using time-decayed expectancy (90-day half-life).
         Requires >= 3 closed trades per expert.
-        Returns list sorted by expectancy desc.
+        Returns list sorted by adjusted_expectancy desc.
         """
-        rows = self.store.get_expert_paper_scores()
+        now = datetime.now(timezone.utc)
+        raw_trades = self.store.get_expert_trades_for_scoring()
+
+        by_expert: dict = defaultdict(list)
+        for t in raw_trades:
+            by_expert[t["expert_handle"]].append(t)
+
         result = []
-        for r in rows:
-            total = r["total"] or 0
-            wins = r["wins"] or 0
-            losses = r["losses"] or 0
-            win_rate = wins / total if total else 0
+        for handle, trades in by_expert.items():
+            if len(trades) < 3:
+                continue
 
-            avg_win = r["avg_win_pct"] or 0       # positive
-            avg_loss = r["avg_loss_pct"] or 0     # negative
+            total_w = 0.0
+            win_w = 0.0
+            win_pnl_w = 0.0
+            loss_pnl_w = 0.0
+            win_w_sum = 0.0
+            loss_w_sum = 0.0
+            gross_win = 0.0
+            gross_loss = 0.0
 
-            # Expectancy: expected % return per trade
-            # = (win_rate × avg_win) + (loss_rate × avg_loss)
+            for t in trades:
+                try:
+                    closed = datetime.fromisoformat(t["closed_at"])
+                    if closed.tzinfo is None:
+                        closed = closed.replace(tzinfo=timezone.utc)
+                    days_ago = (now - closed).total_seconds() / 86400
+                except Exception:
+                    days_ago = 0.0
+                w = _decay_weight(days_ago)
+                pnl = t["pnl_pct"] or 0.0
+                total_w += w
+                if t["outcome"] == "win":
+                    win_w += w
+                    win_pnl_w += pnl * w
+                    win_w_sum += w
+                    gross_win += pnl * w
+                else:
+                    loss_pnl_w += pnl * w
+                    loss_w_sum += w
+                    gross_loss += abs(pnl) * w
+
+            win_rate = win_w / total_w if total_w else 0.0
+            avg_win = win_pnl_w / win_w_sum if win_w_sum else 0.0
+            avg_loss = loss_pnl_w / loss_w_sum if loss_w_sum else 0.0
             expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
 
+            total = len(trades)
+            wins = sum(1 for t in trades if t["outcome"] == "win")
+            losses = total - wins
             wilson_conf = _wilson_lower(wins, total)
-            # Adjusted expectancy: penalises statistically weak track records
             adjusted_expectancy = expectancy * wilson_conf
-
-            # Profit factor: gross wins / gross losses (> 1 = profitable)
-            gross_win = r["gross_win"] or 0
-            gross_loss = r["gross_loss"] or 0.0001  # avoid div/0
-            profit_factor = gross_win / gross_loss
+            profit_factor = gross_win / (gross_loss or 0.0001)
 
             result.append({
-                "handle": r["expert_handle"],
+                "handle": handle,
                 "win_rate": win_rate,
                 "wins": wins,
                 "losses": losses,
                 "total": total,
-                "avg_pnl_pct": r["avg_pnl_pct"] or 0,
+                "avg_pnl_pct": sum(t["pnl_pct"] or 0 for t in trades) / total,
                 "avg_win_pct": avg_win,
                 "avg_loss_pct": avg_loss,
                 "expectancy": expectancy,
                 "wilson_conf": wilson_conf,
                 "adjusted_expectancy": adjusted_expectancy,
                 "profit_factor": profit_factor,
-                "avg_max_gain": r["avg_max_gain"] or 0,
-                "avg_max_drawdown": r["avg_max_drawdown"] or 0,
-                "avg_days_held": r["avg_days_held"] or 0,
+                "avg_max_gain": 0.0,
+                "avg_max_drawdown": 0.0,
+                "avg_days_held": 0.0,
             })
 
         return sorted(result, key=lambda x: x["adjusted_expectancy"], reverse=True)
