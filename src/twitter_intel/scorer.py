@@ -57,10 +57,11 @@ class ExpertScorer:
             win_w = 0.0
             win_pnl_w = 0.0
             loss_pnl_w = 0.0
-            win_w_sum = 0.0
-            loss_w_sum = 0.0
             gross_win = 0.0
             gross_loss = 0.0
+            max_gain_w = 0.0
+            max_dd_w = 0.0
+            days_held_w = 0.0
 
             for t in trades:
                 try:
@@ -76,16 +77,20 @@ class ExpertScorer:
                 if t["outcome"] == "win":
                     win_w += w
                     win_pnl_w += pnl * w
-                    win_w_sum += w
                     gross_win += pnl * w
                 else:
                     loss_pnl_w += pnl * w
-                    loss_w_sum += w
                     gross_loss += abs(pnl) * w
+                if t.get("max_gain_pct") is not None:
+                    max_gain_w += (t["max_gain_pct"] or 0.0) * w
+                if t.get("max_drawdown_pct") is not None:
+                    max_dd_w += (t["max_drawdown_pct"] or 0.0) * w
+                if t.get("days_held") is not None:
+                    days_held_w += (t["days_held"] or 0.0) * w
 
             win_rate = win_w / total_w if total_w else 0.0
-            avg_win = win_pnl_w / win_w_sum if win_w_sum else 0.0
-            avg_loss = loss_pnl_w / loss_w_sum if loss_w_sum else 0.0
+            avg_win = win_pnl_w / win_w if win_w else 0.0
+            avg_loss = loss_pnl_w / (total_w - win_w) if (total_w - win_w) else 0.0
             expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
 
             total = len(trades)
@@ -108,9 +113,9 @@ class ExpertScorer:
                 "wilson_conf": wilson_conf,
                 "adjusted_expectancy": adjusted_expectancy,
                 "profit_factor": profit_factor,
-                "avg_max_gain": 0.0,
-                "avg_max_drawdown": 0.0,
-                "avg_days_held": 0.0,
+                "avg_max_gain": max_gain_w / total_w if total_w else 0.0,
+                "avg_max_drawdown": max_dd_w / total_w if total_w else 0.0,
+                "avg_days_held": days_held_w / total_w if total_w else 0.0,
             })
 
         return sorted(result, key=lambda x: x["adjusted_expectancy"], reverse=True)
