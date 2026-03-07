@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 import logging
-import math
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,39 +9,26 @@ import requests
 import yfinance as yf
 
 from .store import TwitterIntelStore
-from . import market_context as mctx
-from . import finviz_scraper as fvz
 
 logger = logging.getLogger(__name__)
 
 _MIN_SIGNALS = 5
-_LOOKBACK_STEPS = [24, 48, 72, 120]
-_PROVEN_MIN_TRADES = 8
-_PROVEN_MIN_EXPECTANCY = 0.0
-_ACCOUNT_SIZE = float(os.environ.get("ACCOUNT_SIZE", "10000"))
-_RISK_PER_TRADE_PCT = 0.01
+_price_cache: dict = {}
 
 
 def _fetch_price(ticker: str) -> float | None:
+    if ticker in _price_cache:
+        return _price_cache[ticker]
     try:
         hist = yf.Ticker(ticker).history(period="1d", interval="5m")
-        return float(hist["Close"].iloc[-1]) if not hist.empty else None
+        if not hist.empty:
+            price = float(hist["Close"].iloc[-1])
+            _price_cache[ticker] = price
+            return price
     except Exception:
-        return None
-
-
-def _dedup_ta_notes(raw: str | None) -> str:
-    if not raw:
-        return ""
-    seen: set = set()
-    unique = []
-    for note in raw.split("|||"):
-        note = note.strip()
-        key = note.lower()[:20]
-        if note and key not in seen:
-            seen.add(key)
-            unique.append(note)
-    return " · ".join(unique[:2])
+        pass
+    return None
+_LOOKBACK_STEPS = [24, 48, 72, 120]
 
 
 def _signal_age_label(latest_signal_time: str | None, trade_type: str) -> str:
@@ -59,230 +47,115 @@ def _signal_age_label(latest_signal_time: str | None, trade_type: str) -> str:
         return ""
 
 
-def _rr_and_size(entry: float, target: float, stop: float) -> str:
-    risk = entry - stop
-    reward = target - entry
-    if risk <= 0:
-        return ""
-    rr = reward / risk
-    shares = int((_ACCOUNT_SIZE * _RISK_PER_TRADE_PCT) / risk)
-    return f"R:R 1:{rr:.1f} · Size ~{shares} shares (5% stop, 1% risk)"
+def _is_qualified(e: dict, min_trades: int, min_win_rate: float) -> bool:
+    return (
+        e["total"] >= min_trades
+        and e["win_rate"] >= min_win_rate
+        and e.get("expectancy", 0) > 0
+    )
 
 
-def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -> str:
+def _build_brief(
+    signals: list,
+    expert_scores: list,
+    store: TwitterIntelStore,
+    min_trades: int = 5,
+    min_win_rate: float = 0.50,
+) -> str:
     today = date.today().strftime("%b %d, %Y")
     lines = [f"📊 <b>Daily Trading Brief — {today}</b>\n"]
 
-    # Market sentiment header
-    sentiment = mctx.market_sentiment()
-    if sentiment["warning"]:
-        lines.append(f"⚠️ <b>{sentiment['warning']}</b>")
-        if sentiment["vix"] is not None:
-            lines.append(f"   VIX: {sentiment['vix']:.1f} — elevated fear, reduce position sizes\n")
-        else:
-            lines.append("")
-    elif sentiment["regime"] == "bull":
-        spy_str = f"SPY {sentiment['spy_change']*100:+.1f}%" if sentiment["spy_change"] is not None else ""
-        qqq_str = f"QQQ {sentiment['qqq_change']*100:+.1f}%" if sentiment["qqq_change"] is not None else ""
-        index_str = " · ".join(filter(None, [spy_str, qqq_str]))
-        lines.append(f"🟩 Market tailwind: {index_str}\n")
-
-    # Sentiment score modifier for confidence
-    sent_score = sentiment["sentiment_score"]  # [-1, +1]
-
-    # Build expert lookup
+    # Build expert lookup (handle -> score dict)
     expert_map = {e["handle"]: e for e in expert_scores}
 
-    _MOMENTUM_BADGE = {
-        "penny_pump": "🚀",
-        "wave_play": "〽️",
-        "breakout": "⚡",
-        "general": "",
-    }
+    # Qualify experts
+    qualified = [e for e in expert_scores if _is_qualified(e, min_trades, min_win_rate)]
+    qualified.sort(key=lambda e: e.get("adjusted_expectancy", e["expectancy"]), reverse=True)
 
-    def _confidence(s: dict, ctx: dict) -> tuple[str, float]:
+    # ── Section 1: TOP EXPERTS ──────────────────────────────────────────────
+    lines.append("=== TOP EXPERTS ===")
+    if qualified:
+        for rank, e in enumerate(qualified, 1):
+            win_rate = int(e["win_rate"] * 100)
+            avg_return = (e.get("adjusted_expectancy", e["expectancy"]) or 0) * 100
+            sign = "+" if avg_return >= 0 else ""
+            lines.append(
+                f"{rank}. @{e['handle']}   {sign}{avg_return:.1f}%/trade  "
+                f"{win_rate}% wins  {e['total']} trades"
+            )
+            recent = store.get_expert_recent_trades(e["handle"], limit=5)
+            if recent:
+                trade_parts = []
+                for t in recent:
+                    pnl = (t["pnl_pct"] or 0) * 100
+                    icon = "✓" if t["outcome"] == "win" else "✗"
+                    trade_parts.append(f"{t['ticker']} {pnl:+.1f}% {icon}")
+                lines.append(f"   Recent: {'  '.join(trade_parts)}")
+            lines.append("")
+    else:
+        lines.append("<i>No qualified experts yet — need ≥{} closed trades and ≥{}% win rate.</i>".format(
+            min_trades, int(min_win_rate * 100)
+        ))
+        lines.append("")
+
+    # ── Section 2: SIGNALS TO WATCH ────────────────────────────────────────
+    lines.append("=== SIGNALS TO WATCH ===")
+
+    qualified_handles = {e["handle"] for e in qualified}
+
+    # Filter signals: at least one calling expert must be qualified
+    watchlist = []
+    for s in signals:
         handles = [h.strip() for h in (s.get("experts") or "").split(",") if h.strip()]
-        score = 0.0
-        proven_count = 0
-        for h in handles:
-            e = expert_map.get(h)
-            if e and e["total"] >= _PROVEN_MIN_TRADES and e.get("adjusted_expectancy", e["expectancy"]) > _PROVEN_MIN_EXPECTANCY:
-                score += max(e["expectancy"], 0.01)
-                proven_count += 1
-            else:
-                score += 0.001
-        # Apply market sentiment modifier: bear reduces score, bull boosts
-        score = score * (1.0 + sent_score * 0.3)
-        tier = "HIGH" if proven_count >= 1 else ("MEDIUM" if handles else "LOW")
-        # In a bear market, MEDIUM signals are demoted if no proven expert
-        if tier == "MEDIUM" and sentiment["regime"] == "bear":
-            tier = "LOW"
-        return tier, score
+        callers = [h for h in handles if h in qualified_handles]
+        if callers:
+            watchlist.append((s, callers))
 
-    def _momentum_score(s: dict, ctx: dict, entry: float | None) -> float:
-        """Compute an explosive-move multiplier based on volume, ATR, and momentum type."""
-        volume_ratio = ctx.get("volume_ratio") or 1.0
-        atr_pct = ctx.get("atr_pct") or 0.02
-        momentum_type = s.get("top_momentum_type", "general")
-
-        # Volume boost: every 1× above average adds 15%, capped at +60%
-        vol_boost = 1.0 + min(max(volume_ratio - 1.0, 0.0), 4.0) * 0.15
-        # ATR boost: higher daily range = higher explosive potential, cap at +40%
-        atr_boost = 1.0 + min(atr_pct * 10, 2.0) * 0.20
-        # Type bonus: penny pump and wave plays get priority
-        type_bonus = {"penny_pump": 1.4, "wave_play": 1.25, "breakout": 1.15, "general": 1.0}.get(momentum_type, 1.0)
-        # Penalize large caps with low volume (slow movers)
-        if entry is not None and entry > 150 and volume_ratio < 2.0:
-            vol_boost *= 0.5
-
-        return vol_boost * atr_boost * type_bonus
-
-    # Pre-fetch context for all tickers to compute momentum scores
-    _ctx_map: dict = {}
-    _entry_map: dict = {}
-    for s in signals:
-        tk = s["ticker"]
-        if tk not in _ctx_map:
-            _ctx_map[tk] = mctx.ticker_context(tk)
-            _entry_map[tk] = _fetch_price(tk)
-
-    # Sort signals: HIGH first, then MEDIUM; drop LOW; weighted by momentum
-    tiered = []
-    for s in signals:
-        ctx_pre = _ctx_map.get(s["ticker"], {})
-        entry_pre = _entry_map.get(s["ticker"])
-        tier, score = _confidence(s, ctx_pre)
-        if tier != "LOW":
-            mscore = _momentum_score(s, ctx_pre, entry_pre)
-            tiered.append((tier, score * mscore, s))
-    tiered.sort(key=lambda x: (0 if x[0] == "HIGH" else 1, -x[1]))
-
-    if tiered:
-        lines.append("🏦 <b>Stocks to Watch</b>")
-        for tier, score, s in tiered:
+    if watchlist:
+        for s, callers in watchlist:
             ticker = s["ticker"]
             day = s.get("day_count") or 0
             swing = s.get("swing_count") or 0
             trade_type = "day" if day >= swing else "swing"
-            trade_label = "📅 Day" if trade_type == "day" else "📆 Swing"
-            tier_icon = "🔥" if tier == "HIGH" else "🔵"
-            n_experts = s["expert_count"]
-
-            ctx = _ctx_map.get(ticker) or mctx.ticker_context(ticker)
-            entry = _entry_map.get(ticker) or _fetch_price(ticker)
-            avg_target = s.get("avg_target")
-            momentum_type = s.get("top_momentum_type", "general")
-            momentum_badge = _MOMENTUM_BADGE.get(momentum_type, "")
-            ta_notes = _dedup_ta_notes(s.get("all_ta_notes"))
-
-            entry_str = f"${entry:.2f}" if entry else "N/A"
-            target_str = ""
-            rr_str = ""
-            if entry and avg_target and avg_target > entry:
-                gain_pct = (avg_target - entry) / entry * 100
-                target_str = f"→ ${avg_target:.2f} (+{gain_pct:.1f}%)"
-                stop_price = entry * 0.95
-                rr_str = _rr_and_size(entry, avg_target, stop_price)
-
-            # Intraday context
-            ctx_parts = []
-            if ctx["change_pct"] is not None:
-                ctx_parts.append(f"{ctx['change_pct']*100:+.1f}% today")
-            if ctx["volume_ratio"] is not None:
-                ctx_parts.append(f"Vol {ctx['volume_ratio']:.1f}× avg")
-            ctx_str = " · ".join(ctx_parts)
-
-            # Ticker paper history
-            hist = store.get_ticker_paper_history(ticker)
-            hist_str = ""
-            if hist and hist["total"]:
-                avg_pnl = (hist['avg_pnl_pct'] or 0) * 100
-                hist_str = (
-                    f"📊 {hist['total']} calls · {hist['wins']}W/{hist['losses']}L · "
-                    f"avg {avg_pnl:+.1f}%"
-                )
 
             age_str = _signal_age_label(s.get("latest_signal_time"), trade_type)
 
-            # Earnings proximity
-            earn_days = mctx.earnings_proximity(ticker)
-            earn_str = ""
-            if earn_days is not None and earn_days <= 7:
-                earn_str = f"⚠️ Earnings in {earn_days}d — elevated risk"
-                if earn_days <= 3 and tier == "HIGH":
-                    tier = "MEDIUM"
-                    tier_icon = "🔵"
+            caller_parts = []
+            for h in callers:
+                e = expert_map.get(h, {})
+                avg_ret = (e.get("adjusted_expectancy", e.get("expectancy", 0)) or 0) * 100
+                wr = int((e.get("win_rate", 0) or 0) * 100)
+                sign = "+" if avg_ret >= 0 else ""
+                caller_parts.append(f"@{h} ({sign}{avg_ret:.1f}%/trade, {wr}% wins)")
 
-            # Unusual options flow
-            flow = mctx.options_flow(ticker)
-            flow_str = ""
-            if flow:
-                flow_str = f"🔮 Options: {flow['call_volume']:,} calls · Vol/OI {flow['max_vol_oi']}×"
+            callers_str = ", ".join(caller_parts)
 
-            # Already-moved chasing warning
-            chase_str = ""
-            if ctx["change_pct"] is not None and ctx["change_pct"] > 0.03:
-                chase_str = f"📈 Already +{ctx['change_pct']*100:.1f}% today — wait for pullback"
+            avg_target = s.get("avg_target")
+            entry = _fetch_price(ticker)
+            entry_str = f"${entry:.2f}" if entry else "market"
+            target_str = ""
+            if avg_target and entry and avg_target > entry:
+                gain_pct = (avg_target - entry) / entry * 100
+                target_str = f"  Target: ${avg_target:.2f} (+{gain_pct:.1f}%)"
 
-            # Short interest
-            short_pct = fvz.short_interest(ticker)
-            short_str = ""
-            if short_pct is not None and short_pct > 0.10:
-                squeeze = " — squeeze potential" if short_pct > 0.20 else ""
-                short_str = f"Short: {short_pct*100:.1f}% float{squeeze}"
+            # Expert-specified stop + R:R (only when from tweet, not ATR default)
+            stop_str = ""
+            rr_str = ""
+            expert_stop = s.get("expert_stop")
+            if expert_stop and entry:
+                stop_str = f"  Stop: ${expert_stop:.2f}"
+                if avg_target and avg_target > entry and entry > expert_stop:
+                    rr = (avg_target - entry) / (entry - expert_stop)
+                    rr_str = f"  R:R 1:{rr:.1f}"
 
-            expert_handles = [f"@{h.strip()}" for h in (s.get("experts") or "").split(",") if h.strip()]
-            experts_str = " ".join(expert_handles)
-            badge_str = f" {momentum_badge}" if momentum_badge else ""
-            lines.append(
-                f"  {tier_icon} <b>${ticker}</b>{badge_str} — {trade_label} · Score {score:.3f}"
-            )
-            lines.append(f"     {experts_str}")
-            price_line = f"     Entry: {entry_str}"
-            if target_str:
-                price_line += f"  Target: {target_str}"
-            lines.append(price_line)
-            if rr_str:
-                lines.append(f"     {rr_str}")
-            if ctx_str:
-                lines.append(f"     {ctx_str}")
-            if chase_str:
-                lines.append(f"     {chase_str}")
-            if earn_str:
-                lines.append(f"     {earn_str}")
-            if flow_str:
-                lines.append(f"     {flow_str}")
-            if short_str:
-                lines.append(f"     {short_str}")
-            if hist_str:
-                lines.append(f"     {hist_str}")
-            if ta_notes:
-                lines.append(f"     <i>{ta_notes}</i>")
+            lines.append(f"${ticker}  by {callers_str}")
+            price_line = f"  Entry: {entry_str}{target_str}{stop_str}{rr_str}"
             if age_str:
-                lines.append(f"     🕐 {age_str}")
+                price_line += f"  |  Called {age_str}"
+            lines.append(price_line)
             lines.append("")
     else:
-        if sentiment["regime"] == "bear":
-            lines.append("<i>No HIGH-confidence signals — bear market filter active.</i>\n")
-        else:
-            lines.append("<i>No validated signals found.</i>\n")
-
-    # Expert leaderboard
-    if expert_scores:
-        lines.append("🏆 <b>Expert Performance</b> <i>(OHLC-verified paper trades)</i>")
-        for e in expert_scores[:5]:
-            win_rate = int(e["win_rate"] * 100)
-            exp = e["expectancy"] * 100
-            pf = e["profit_factor"]
-            days = e["avg_days_held"]
-            bar = "▓" * (win_rate // 10) + "░" * (10 - win_rate // 10)
-            exp_sign = "+" if exp >= 0 else ""
-            wilson = int((e.get("wilson_conf") or 0) * 100)
-            lines.append(
-                f"  @{e['handle']} {bar} {win_rate}% · "
-                f"E={exp_sign}{exp:.1f}% · Conf={wilson}% · PF={pf:.2f} · "
-                f"{e['wins']}W/{e['losses']}L · {days:.1f}d avg"
-            )
+        lines.append("<i>No signals from proven experts.</i>")
         lines.append("")
 
     return "\n".join(lines)
@@ -295,11 +168,15 @@ class BriefGenerator:
         lookback_hours: int = 24,
         min_expert_mentions: int = 1,
         scorer=None,
+        min_trades: int = 5,
+        min_win_rate: float = 0.50,
     ):
         self.store = store
         self.lookback_hours = lookback_hours
         self.min_expert_mentions = min_expert_mentions
         self.scorer = scorer
+        self.min_trades = min_trades
+        self.min_win_rate = min_win_rate
 
     def _get_signals(self) -> list:
         for hours in _LOOKBACK_STEPS:
@@ -324,9 +201,12 @@ class BriefGenerator:
             except Exception as e:
                 logger.warning("Expert scoring failed: %s", e)
 
-        text = _build_brief(signals, expert_scores, self.store)
-        mctx.clear_cache()
-        fvz.clear_cache()
+        _price_cache.clear()
+        text = _build_brief(
+            signals, expert_scores, self.store,
+            min_trades=self.min_trades,
+            min_win_rate=self.min_win_rate,
+        )
 
         # Portfolio summary
         summary = self.store.get_portfolio_summary()

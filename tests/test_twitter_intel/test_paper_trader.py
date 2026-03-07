@@ -96,12 +96,14 @@ def test_spy_regime_bull():
 
 
 def test_spy_regime_bear():
-    """SPY below 20D SMA → bear."""
+    """SPY below 20D SMA and not a crash-level drop → bear."""
     from src.twitter_intel.paper_trader import _spy_regime, _spy_regime_cache
     import pandas as pd
 
     _spy_regime_cache.clear()
-    closes = [510.0] * 19 + [490.0]   # current < SMA
+    # Prior close 510.0; current 495.0 → -2.94% (below the -3% crash threshold)
+    # SMA20 ≈ 510.0, so current (495) < SMA → bear, not crash
+    closes = [510.0] * 19 + [495.0]
     opens = closes[:]
     idx = pd.date_range("2025-01-01", periods=20, freq="D", tz="UTC")
     hist = pd.DataFrame({"Close": closes, "Open": opens, "High": closes, "Low": closes}, index=idx)
@@ -113,14 +115,16 @@ def test_spy_regime_bear():
 
 
 def test_spy_regime_crash():
-    """SPY down >3% from prior close → crash."""
+    """SPY down >3% from prior close → crash (even if partially recovering intraday)."""
     from src.twitter_intel.paper_trader import _spy_regime, _spy_regime_cache
     import pandas as pd
 
     _spy_regime_cache.clear()
-    closes = [500.0] * 19 + [483.0]   # -3.4% from prior close
-    opens = closes[:]
-    opens[-1] = 500.0
+    # Prior closes all 500.0; today closes at 483.0 (-3.4% vs prior close)
+    # Today opens at 490.0 — so intraday (close vs open) = -1.4%, but vs prior close = -3.4%
+    # This tests that we use prior close, not today's open, as the baseline
+    closes = [500.0] * 19 + [483.0]
+    opens = [500.0] * 19 + [490.0]   # opens[-1] = 490, different from closes[-2] = 500
     idx = pd.date_range("2025-01-01", periods=20, freq="D", tz="UTC")
     hist = pd.DataFrame({"Close": closes, "Open": opens, "High": closes, "Low": closes}, index=idx)
 

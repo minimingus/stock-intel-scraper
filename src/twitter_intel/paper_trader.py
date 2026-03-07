@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -125,9 +127,9 @@ def _spy_regime() -> str:
         hist.index = hist.index.tz_convert("UTC")
         closes = hist["Close"].values
         current = float(closes[-1])
-        today_open = float(hist["Open"].iloc[-1])
+        prior_close = float(closes[-2])
         sma20 = float(closes[-20:].mean())
-        intraday_chg = (current - today_open) / today_open
+        intraday_chg = (current - prior_close) / prior_close
         if intraday_chg <= _SPY_CRASH_THRESHOLD:
             regime = "crash"
         elif current > sma20:
@@ -297,12 +299,11 @@ def evaluate_open_trades(store) -> int:
     This catches targets/stops that were hit between runs, not just at run time.
     Returns count of trades closed.
     """
+    _spy_regime_cache.clear()
+    _price_cache.clear()
     trades = store.get_open_paper_trades()
     if not trades:
         return 0
-
-    _spy_regime_cache.clear()
-    _price_cache.clear()
     now = datetime.now(timezone.utc)
     closed = 0
 

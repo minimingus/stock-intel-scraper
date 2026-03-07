@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import logging
+import re
 import signal
 import sys
 
@@ -9,7 +12,7 @@ from .brief import BriefGenerator
 from .discovery import ExpertDiscovery
 from .extractor import SignalExtractor
 from . import paper_trader
-from .scraper import TwitterScraper
+from .scraper import TwitterScraper, deep_scrape_handle, get_following
 from .scorer import ExpertScorer
 from .store import TwitterIntelStore
 
@@ -41,6 +44,8 @@ def build_components(cfg: dict):
         lookback_hours=intel_cfg.get("lookback_hours", 24),
         min_expert_mentions=intel_cfg.get("min_expert_mentions", 2),
         scorer=scorer,
+        min_trades=intel_cfg.get("proven_min_trades", 5),
+        min_win_rate=intel_cfg.get("proven_min_win_rate", 0.50),
     )
     return store, scraper, extractor, discovery, brief
 
@@ -55,6 +60,98 @@ def _ingest_tweets(store, handle: str, tweets: list, all_tweets: list):
             t["likes"], t["retweets"], t.get("tweet_time"),
         )
         all_tweets.append({"tweet_id": t["tweet_id"], "text": t["text"]})
+
+
+def deep_backfill_experts(store, extractor, handles: list, months_back: int = 3):
+    """
+    Deep-scrape handles using cursor pagination going back `months_back` months.
+    Then opens and evaluates paper trades. Also saves author_ids for discovery.
+    """
+    logger.info("Deep backfill: %d expert(s), %d months back", len(handles), months_back)
+    all_tweets = []
+    for handle in handles:
+        tweets = deep_scrape_handle(handle, months_back=months_back)
+        for t in tweets:
+            store.insert_tweet(
+                t["tweet_id"], handle, t["text"],
+                t["likes"], t["retweets"], t.get("tweet_time"),
+            )
+            # Save author_id for later following-based discovery
+            if t.get("author_id"):
+                store.set_author_id(handle, t["author_id"])
+        all_tweets.extend(tweets)
+        logger.info("Deep backfill @%s: %d tweets in window", handle, len(tweets))
+
+    count = extractor.run()
+    logger.info("Extracted %d signals from deep backfill", count)
+    opened = paper_trader.open_trades_for_new_signals(store)
+    logger.info("Opened %d paper trades from deep backfill", opened)
+    closed = paper_trader.evaluate_open_trades(store)
+    logger.info("Closed %d paper trades", closed)
+
+
+def prune_underperforming_experts(store, min_trades: int = 10,
+                                   max_win_rate: float = 0.40) -> list[str]:
+    """
+    Deactivate experts with ≥ min_trades closed trades AND win_rate < max_win_rate
+    AND negative expectancy. Returns list of deactivated handles.
+    """
+    from .scorer import ExpertScorer
+    scores = ExpertScorer(store).score()
+    deactivated = []
+    for e in scores:
+        if e["total"] >= min_trades and e["win_rate"] < max_win_rate and e["expectancy"] <= 0:
+            store.deactivate_expert(e["handle"])
+            deactivated.append(e["handle"])
+            logger.info("Deactivated underperformer @%s (%.0f%% win, E=%.2f%%, %d trades)",
+                        e["handle"], e["win_rate"] * 100, e["expectancy"] * 100, e["total"])
+    return deactivated
+
+
+# Stock-focused keywords to filter discovered accounts
+_STOCK_KEYWORDS = re.compile(
+    r"\b(trade[r]?s?|stock|invest|market|options|swing|daytr|momentum|"
+    r"chart|technical|analysis|bull|bear|penny|small.?cap|nasdaq|nyse|"
+    r"hedge|fund|portfolio|equity|capital|alert|picks?|signals?)\b",
+    re.IGNORECASE,
+)
+
+
+def discover_from_following(store, top_handles: list[str],
+                             max_per_expert: int = 200) -> int:
+    """
+    For each top expert, fetch who they follow and add stock-focused accounts
+    as new experts. Returns count of new experts added.
+    """
+    # Build handle→author_id map from DB
+    known = {r["handle"]: r["author_id"] for r in store.get_experts_with_author_ids()}
+    existing_handles = {h.lower() for h in store.get_active_experts()}
+    added = 0
+
+    for handle in top_handles:
+        author_id = known.get(handle)
+        if not author_id:
+            logger.warning("No author_id for @%s — cannot fetch following", handle)
+            continue
+
+        logger.info("Fetching following for @%s (id=%s)...", handle, author_id)
+        following = get_following(author_id, max_count=max_per_expert)
+        logger.info("@%s follows %d accounts", handle, len(following))
+
+        for user in following:
+            uname = user.get("username", "").strip()
+            if not uname or uname.lower() in existing_handles:
+                continue
+            bio = user.get("description", "")
+            if _STOCK_KEYWORDS.search(bio):
+                store.upsert_expert(uname, source="following")
+                existing_handles.add(uname.lower())
+                added += 1
+                logger.info("  Added @%s from @%s's following (bio: %s)",
+                            uname, handle, bio[:60])
+
+    logger.info("discover_from_following: added %d new experts", added)
+    return added
 
 
 def backfill_experts(store, scraper, extractor, handles: list = None):
@@ -76,6 +173,29 @@ def backfill_experts(store, scraper, extractor, handles: list = None):
     logger.info("Opened %d paper trades from backfill", opened)
     closed = paper_trader.evaluate_open_trades(store)
     logger.info("Closed %d paper trades", closed)
+
+
+def scrape_top_experts(store, scraper, extractor, discovery, cfg, top_n: int = 5):
+    """Fast-poll: scrape only top N qualified experts by adjusted_expectancy."""
+    from .scorer import ExpertScorer
+    scores = ExpertScorer(store).score()
+    qualified = [
+        e["handle"] for e in scores
+        if e["total"] >= 5 and e.get("expectancy", 0) > 0
+    ][:top_n]
+    if not qualified:
+        logger.debug("Fast-poll: no qualified experts yet, skipping")
+        return
+    logger.info("Fast-poll: scraping top %d experts: %s", len(qualified), qualified)
+    all_tweets = []
+    for handle, tweets in scraper.scrape_all(qualified).items():
+        _ingest_tweets(store, handle, tweets, all_tweets)
+    count = extractor.run()
+    if count:
+        logger.info("Fast-poll extracted %d signals", count)
+    opened = paper_trader.open_trades_for_new_signals(store)
+    if opened:
+        logger.info("Fast-poll opened %d paper trades", opened)
 
 
 def scrape_and_extract(store, scraper, extractor, discovery, cfg):
@@ -132,6 +252,14 @@ def run(config_path: str = "config.yaml"):
         hour=brief_hour,
         minute=brief_minute,
         id="brief",
+    )
+    scheduler.add_job(
+        scrape_top_experts,
+        "interval",
+        minutes=30,
+        args=[store, scraper, extractor, discovery, cfg],
+        id="fast_poll",
+        misfire_grace_time=300,
     )
     scheduler.add_job(
         store.prune_old_tweets,
