@@ -76,3 +76,55 @@ def test_day_trade_after_hours_expires_next_day():
     signal_dt = datetime(2025, 1, 15, 22, 0, tzinfo=timezone.utc)
     expiry = _expiry_for_trade("day", signal_dt)
     assert expiry == datetime(2025, 1, 16, 21, 0, tzinfo=timezone.utc)
+
+
+def test_spy_regime_bull():
+    """SPY above 20D SMA, no crash → bull."""
+    from src.twitter_intel.paper_trader import _spy_regime, _spy_regime_cache
+    import pandas as pd
+
+    _spy_regime_cache.clear()
+    closes = [490.0] * 19 + [500.0]   # current > SMA
+    opens = closes[:]
+    idx = pd.date_range("2025-01-01", periods=20, freq="D", tz="UTC")
+    hist = pd.DataFrame({"Close": closes, "Open": opens, "High": closes, "Low": closes}, index=idx)
+
+    with patch("src.twitter_intel.paper_trader.yf.Ticker") as mock:
+        mock.return_value.history.return_value = hist
+        assert _spy_regime() == "bull"
+    _spy_regime_cache.clear()
+
+
+def test_spy_regime_bear():
+    """SPY below 20D SMA → bear."""
+    from src.twitter_intel.paper_trader import _spy_regime, _spy_regime_cache
+    import pandas as pd
+
+    _spy_regime_cache.clear()
+    closes = [510.0] * 19 + [490.0]   # current < SMA
+    opens = closes[:]
+    idx = pd.date_range("2025-01-01", periods=20, freq="D", tz="UTC")
+    hist = pd.DataFrame({"Close": closes, "Open": opens, "High": closes, "Low": closes}, index=idx)
+
+    with patch("src.twitter_intel.paper_trader.yf.Ticker") as mock:
+        mock.return_value.history.return_value = hist
+        assert _spy_regime() == "bear"
+    _spy_regime_cache.clear()
+
+
+def test_spy_regime_crash():
+    """SPY down >3% from prior close → crash."""
+    from src.twitter_intel.paper_trader import _spy_regime, _spy_regime_cache
+    import pandas as pd
+
+    _spy_regime_cache.clear()
+    closes = [500.0] * 19 + [483.0]   # -3.4% from prior close
+    opens = closes[:]
+    opens[-1] = 500.0
+    idx = pd.date_range("2025-01-01", periods=20, freq="D", tz="UTC")
+    hist = pd.DataFrame({"Close": closes, "Open": opens, "High": closes, "Low": closes}, index=idx)
+
+    with patch("src.twitter_intel.paper_trader.yf.Ticker") as mock:
+        mock.return_value.history.return_value = hist
+        assert _spy_regime() == "crash"
+    _spy_regime_cache.clear()

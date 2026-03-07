@@ -102,6 +102,46 @@ def _atr_stop(ticker: str, entry: float) -> float:
         return entry * (1 - _STOP_LOSS_PCT)
 
 
+_SPY_CRASH_THRESHOLD = -0.03   # -3% vs prior close triggers crash mode
+_spy_regime_cache: dict = {}
+
+
+def _spy_regime() -> str:
+    """
+    Returns 'bull', 'bear', or 'crash' based on SPY vs its 20-day SMA.
+    - 'crash': today's close is down >3% vs prior close
+    - 'bull':  SPY close > 20D SMA
+    - 'bear':  SPY close <= 20D SMA
+    Cached per session; cleared by evaluate_open_trades() each cycle.
+    """
+    if "regime" in _spy_regime_cache:
+        return _spy_regime_cache["regime"]
+    current = sma20 = 0.0
+    try:
+        hist = yf.Ticker("SPY").history(period="25d", interval="1d", auto_adjust=True)
+        if len(hist) < 20:
+            _spy_regime_cache["regime"] = "bull"
+            return "bull"
+        hist.index = hist.index.tz_convert("UTC")
+        closes = hist["Close"].values
+        current = float(closes[-1])
+        today_open = float(hist["Open"].iloc[-1])
+        sma20 = float(closes[-20:].mean())
+        intraday_chg = (current - today_open) / today_open
+        if intraday_chg <= _SPY_CRASH_THRESHOLD:
+            regime = "crash"
+        elif current > sma20:
+            regime = "bull"
+        else:
+            regime = "bear"
+    except Exception as e:
+        logger.warning("SPY regime check failed: %s — defaulting to bull", e)
+        regime = "bull"
+    _spy_regime_cache["regime"] = regime
+    logger.info("Market regime: %s (SPY $%.2f vs SMA20 $%.2f)", regime, current, sma20)
+    return regime
+
+
 def _expiry_for_trade(trade_type: str, signal_dt: datetime) -> datetime:
     """Return the expiry datetime for a trade based on its type.
 
@@ -120,6 +160,10 @@ def _expiry_for_trade(trade_type: str, signal_dt: datetime) -> datetime:
 def open_trades_for_new_signals(store) -> int:
     """Open paper trades for any bullish stock signals not yet tracked. Returns count opened."""
     new_signals = store.get_new_signal_trades()
+    regime = _spy_regime()
+    if regime == "crash":
+        logger.warning("Market crash detected — suspending all new paper trade opens")
+        return 0
     opened = 0
     for sig in new_signals:
         ticker = sig["ticker"]
@@ -151,6 +195,13 @@ def open_trades_for_new_signals(store) -> int:
             logger.info(
                 "Skipped %s for @%s: price $%.2f is >15%% above suggested entry $%.2f",
                 ticker, sig["handle"], price, entry_suggested,
+            )
+            continue
+
+        if regime == "bear" and sig.get("specificity", 0) < 2:
+            logger.debug(
+                "Bear market: skipping low-specificity signal %s for @%s (specificity=%d)",
+                ticker, sig["handle"], sig.get("specificity", 0),
             )
             continue
 
@@ -250,6 +301,7 @@ def evaluate_open_trades(store) -> int:
     if not trades:
         return 0
 
+    _spy_regime_cache.clear()
     _price_cache.clear()
     now = datetime.now(timezone.utc)
     closed = 0

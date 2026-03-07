@@ -247,6 +247,7 @@ class TwitterIntelStore:
         rows = self.conn.execute("""
             SELECT s.id AS signal_id, s.ticker, s.target_price, s.ta_notes,
                    s.entry_price_suggested, s.stop_price_suggested, s.trade_type,
+                   s.specificity,
                    t.handle, t.tweet_id,
                    COALESCE(t.tweet_time, t.scraped_at) AS signal_time
             FROM signals s
@@ -384,7 +385,7 @@ class TwitterIntelStore:
             "SELECT COUNT(*) FROM tweets WHERE scraped_at >= datetime('now', '-24 hours')"
         ).fetchone()[0]
 
-    def get_ticker_paper_history(self, ticker: str) -> dict | None:
+    def get_ticker_paper_history(self, ticker: str):
         """Win/loss/avg-pnl history for a specific ticker across all closed paper trades."""
         row = self.conn.execute("""
             SELECT COUNT(*) AS total,
