@@ -104,7 +104,7 @@ class ExpertScorer:
             losses = total - wins
             wilson_conf = _wilson_lower(wins, total)
             adjusted_expectancy = expectancy * wilson_conf
-            calls_per_week = signal_counts.get(handle, 1) / 4.0  # 30 days ≈ 4 weeks
+            calls_per_week = signal_counts.get(handle, 0) / 4.0  # 30 days ≈ 4 weeks
             freq_mult = _frequency_multiplier(calls_per_week)
             adjusted_expectancy = adjusted_expectancy * freq_mult
             profit_factor = gross_win / (gross_loss or 0.0001)
