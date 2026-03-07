@@ -105,11 +105,15 @@ def _atr_stop(ticker: str, entry: float) -> float:
 def _expiry_for_trade(trade_type: str, signal_dt: datetime) -> datetime:
     """Return the expiry datetime for a trade based on its type.
 
-    Day trades expire at market close (21:00 UTC) on the signal day.
+    Day trades expire at market close (21:00 UTC) on the signal day,
+    or the next day if the signal was posted after market close.
     Swing trades expire 14 days from the signal.
     """
     if trade_type == "day":
-        return signal_dt.replace(hour=_DAY_TRADE_CLOSE_UTC, minute=0, second=0, microsecond=0)
+        expiry = signal_dt.replace(hour=_DAY_TRADE_CLOSE_UTC, minute=0, second=0, microsecond=0)
+        if expiry <= signal_dt:
+            expiry += timedelta(days=1)
+        return expiry
     return signal_dt + timedelta(days=14)
 
 

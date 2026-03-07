@@ -65,3 +65,14 @@ def test_swing_trade_expires_14_days():
     signal_dt = datetime(2025, 1, 15, 15, 0, tzinfo=timezone.utc)
     expiry = _expiry_for_trade("swing", signal_dt)
     assert expiry == signal_dt + timedelta(days=14)
+
+
+def test_day_trade_after_hours_expires_next_day():
+    """Day trade signal posted after market close must expire at next day's close."""
+    from src.twitter_intel.paper_trader import _expiry_for_trade
+    from datetime import datetime, timezone, timedelta
+
+    # 22:00 UTC = after market close
+    signal_dt = datetime(2025, 1, 15, 22, 0, tzinfo=timezone.utc)
+    expiry = _expiry_for_trade("day", signal_dt)
+    assert expiry == datetime(2025, 1, 16, 21, 0, tzinfo=timezone.utc)
