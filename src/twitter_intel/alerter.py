@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timezone
 
 import requests
+import yfinance as yf
 
 from .store import TwitterIntelStore
 from . import market_context as mctx
@@ -14,6 +15,9 @@ _CONVERGENCE_MIN_EXPERTS = 2
 _PROVEN_MIN_TRADES = 8
 _PROVEN_MIN_EXPECTANCY = 0.0
 _ALERT_COOLDOWN_HOURS = 4
+_PUMP_COOLDOWN_HOURS = 2
+_PUMP_MAX_PRICE = 10.0
+_PUMP_MIN_VOL_RATIO = 5.0
 
 
 def _format_alert(ticker: str, entries: list, store: TwitterIntelStore) -> str:
@@ -108,4 +112,82 @@ def run_alert_check(store: TwitterIntelStore, scorer) -> int:
         except Exception as e:
             logger.error("Alert send failed for %s: %s", ticker, e)
 
+    return sent
+
+
+def _format_pump_alert(ticker: str, handles: list, price: float, ctx: dict) -> str:
+    vol = ctx.get("volume_ratio")
+    change = ctx.get("change_pct")
+    vol_str = f"{vol:.1f}×" if vol is not None else "?"
+    change_str = f"{change*100:+.1f}%" if change is not None else "?"
+    handle_strs = " ".join(f"@{h}" for h in handles)
+    return (
+        f"🚨🚀 <b>PENNY PUMP ALERT — ${ticker}</b>\n\n"
+        f"Price: <b>${price:.2f}</b> · Vol {vol_str} avg · Today: {change_str}\n"
+        f"Mentioned by: {handle_strs}\n\n"
+        f"<i>Low-float / penny pump pattern — high risk, fast moves</i>"
+    )
+
+
+def _fetch_price(ticker: str) -> float | None:
+    try:
+        hist = yf.Ticker(ticker).history(period="1d", interval="5m")
+        return float(hist["Close"].iloc[-1]) if not hist.empty else None
+    except Exception:
+        return None
+
+
+def run_penny_pump_check(store: TwitterIntelStore) -> int:
+    """
+    Detect penny stocks with explosive volume mentioned by any expert in the last 30 min.
+    Sends an immediate Telegram alert with 2h cooldown. Returns count sent.
+    """
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        logger.warning("Telegram credentials missing, skipping pump alert")
+        return 0
+
+    rows = store.conn.execute("""
+        SELECT DISTINCT s.ticker, t.handle
+        FROM signals s
+        JOIN tweets t ON t.tweet_id = s.tweet_id
+        WHERE s.sentiment = 'bullish'
+          AND s.asset_type = 'stock'
+          AND COALESCE(t.tweet_time, t.scraped_at) >= datetime('now', ?)
+    """, (f"-{_CONVERGENCE_WINDOW_MIN} minutes",)).fetchall()
+
+    by_ticker: dict[str, list] = {}
+    for row in rows:
+        by_ticker.setdefault(row["ticker"], []).append(row["handle"])
+
+    sent = 0
+    for ticker, handles in by_ticker.items():
+        if store.was_alert_sent_recently(ticker, _PUMP_COOLDOWN_HOURS):
+            continue
+
+        ctx = mctx.ticker_context(ticker)
+        volume_ratio = ctx.get("volume_ratio")
+        if volume_ratio is None or volume_ratio < _PUMP_MIN_VOL_RATIO:
+            continue
+
+        price = _fetch_price(ticker)
+        if price is None or price >= _PUMP_MAX_PRICE:
+            continue
+
+        msg = _format_pump_alert(ticker, handles, price, ctx)
+        try:
+            resp = requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": msg, "parse_mode": "HTML"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            store.record_alert_sent(ticker, handles)
+            logger.info("Pump alert sent for %s @ $%.2f (vol %.1fx)", ticker, price, volume_ratio)
+            sent += 1
+        except Exception as e:
+            logger.error("Pump alert send failed for %s: %s", ticker, e)
+
+    mctx.clear_cache()
     return sent

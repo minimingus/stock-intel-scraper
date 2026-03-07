@@ -31,6 +31,28 @@ _TA_OR_PUMP = re.compile(
     re.IGNORECASE,
 )
 
+_ELLIOTT_WAVE = re.compile(
+    r"\b(wave\s*[345]|wave\s*[iii]{2,3}|elliott\s*wave|ew\s*[345]|impulse\s*wave|"
+    r"wave\s*count|5th\s*wave|3rd\s*wave|correction\s*(?:done|complete|over|finished)|"
+    r"extended\s*wave|wave\s*extension|wave\s*structure)\b",
+    re.IGNORECASE,
+)
+
+_PENNY_SIGNAL = re.compile(
+    r"\b(penny\s*stock|sub.?\$5|micro.?cap|small.?float|low\s*float|"
+    r"\.0[0-9]\b|\$[0-2]\.\d{2}|otc\s*stock|pink\s*sheet|short\s*squeeze\s*play|"
+    r"squeeze\s*candidate|multi.?bagger|10x|20x|50x|100x)\b",
+    re.IGNORECASE,
+)
+
+_BREAKOUT_MOMENTUM = re.compile(
+    r"\b(squeeze\s*setup|squeeze\s*popping|breaking\s*out|broke\s*out|"
+    r"power\s*hour|gap\s*(?:up|fill)|high\s*of\s*day|HOD|new\s*high|52\s*week\s*high|"
+    r"ATH|all.?time\s*high|explosion|explosive\s*move|parabolic|momo|momentum\s*play|"
+    r"catalyst\s*play|news\s*catalyst|earnings\s*play|pre.?market\s*gap)\b",
+    re.IGNORECASE,
+)
+
 _DAY_TRADE = re.compile(
     r"\b(day.?trad|intraday|scalp|today|pre.?market|after.?hours|opening|gap(?:\s+up)?|"
     r"quick|momentum play|alert|runner|scanner|pump|squeeze|catalyst)\b",
@@ -47,6 +69,17 @@ _TARGET_PRICE = re.compile(
     r"(?:target|pt|tp|take[\s-]?profit|price[\s-]?target)[:\s]+\$?(\d{1,6}(?:\.\d{1,2})?)",
     re.IGNORECASE,
 )
+
+
+def _momentum_type(text: str) -> str:
+    """Classify the explosive-move type mentioned in the tweet."""
+    if _PENNY_SIGNAL.search(text):
+        return "penny_pump"
+    if _ELLIOTT_WAVE.search(text):
+        return "wave_play"
+    if _BREAKOUT_MOMENTUM.search(text):
+        return "breakout"
+    return "general"
 
 
 def _sentiment(text: str) -> str:
@@ -124,6 +157,7 @@ class SignalExtractor:
             trade_type = _trade_type(text)
             target_price = _extract_target_price(text)
             ta_notes = _extract_ta_notes(text)
+            momentum_type = _momentum_type(text)
 
             for ticker in _extract_stock_tickers(text):
                 try:
@@ -135,6 +169,7 @@ class SignalExtractor:
                         trade_type=trade_type,
                         target_price=target_price,
                         ta_notes=ta_notes,
+                        momentum_type=momentum_type,
                     )
                     count += 1
                 except Exception as e:

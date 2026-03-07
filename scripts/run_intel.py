@@ -51,7 +51,8 @@ def main():
         elif cmd == "alert":
             scorer = ExpertScorer(store)
             sent = alert_module.run_alert_check(store, scorer)
-            logger.info("Alert check: %d sent", sent)
+            pump_sent = alert_module.run_penny_pump_check(store)
+            logger.info("Alert check: %d convergence, %d pump alerts sent", sent, pump_sent)
         else:
             print(f"Unknown command: {cmd}")
             print(__doc__)

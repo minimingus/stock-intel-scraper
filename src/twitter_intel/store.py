@@ -28,15 +28,16 @@ class TwitterIntelStore:
                 tweet_time  TEXT
             );
             CREATE TABLE IF NOT EXISTS signals (
-                id           INTEGER PRIMARY KEY AUTOINCREMENT,
-                tweet_id     TEXT NOT NULL,
-                ticker       TEXT NOT NULL,
-                asset_type   TEXT NOT NULL,
-                sentiment    TEXT NOT NULL,
-                trade_type   TEXT NOT NULL DEFAULT 'day',
-                extracted_at TEXT NOT NULL,
-                target_price REAL,
-                ta_notes     TEXT
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                tweet_id       TEXT NOT NULL,
+                ticker         TEXT NOT NULL,
+                asset_type     TEXT NOT NULL,
+                sentiment      TEXT NOT NULL,
+                trade_type     TEXT NOT NULL DEFAULT 'day',
+                extracted_at   TEXT NOT NULL,
+                target_price   REAL,
+                ta_notes       TEXT,
+                momentum_type  TEXT NOT NULL DEFAULT 'general'
             );
             CREATE TABLE IF NOT EXISTS paper_trades (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -72,6 +73,7 @@ class TwitterIntelStore:
             "ALTER TABLE tweets ADD COLUMN tweet_time TEXT",
             "ALTER TABLE signals ADD COLUMN target_price REAL",
             "ALTER TABLE signals ADD COLUMN ta_notes TEXT",
+            "ALTER TABLE signals ADD COLUMN momentum_type TEXT NOT NULL DEFAULT 'general'",
             "ALTER TABLE paper_trades ADD COLUMN max_gain_pct REAL",
             "ALTER TABLE paper_trades ADD COLUMN max_drawdown_pct REAL",
             "ALTER TABLE paper_trades ADD COLUMN days_held REAL",
@@ -126,12 +128,13 @@ class TwitterIntelStore:
         return [dict(r) for r in rows]
 
     def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str,
-                      trade_type: str = "day", target_price: float = None, ta_notes: str = None):
+                      trade_type: str = "day", target_price: float = None, ta_notes: str = None,
+                      momentum_type: str = "general"):
         self.conn.execute(
-            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at, target_price, ta_notes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at, "
+            "target_price, ta_notes, momentum_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (tweet_id, ticker, asset_type, sentiment, trade_type,
-             datetime.now(timezone.utc).isoformat(), target_price, ta_notes),
+             datetime.now(timezone.utc).isoformat(), target_price, ta_notes, momentum_type),
         )
         self.conn.commit()
 
@@ -145,7 +148,17 @@ class TwitterIntelStore:
                    SUM(CASE WHEN s.trade_type = 'swing' THEN 1 ELSE 0 END) AS swing_count,
                    AVG(CASE WHEN s.target_price > 0 THEN s.target_price ELSE NULL END) AS avg_target,
                    GROUP_CONCAT(s.ta_notes, '|||') AS all_ta_notes,
-                   MAX(COALESCE(t.tweet_time, t.scraped_at)) AS latest_signal_time
+                   MAX(COALESCE(t.tweet_time, t.scraped_at)) AS latest_signal_time,
+                   CASE MAX(
+                       CASE s.momentum_type
+                           WHEN 'penny_pump' THEN 4
+                           WHEN 'wave_play'  THEN 3
+                           WHEN 'breakout'   THEN 2
+                           ELSE 1 END)
+                       WHEN 4 THEN 'penny_pump'
+                       WHEN 3 THEN 'wave_play'
+                       WHEN 2 THEN 'breakout'
+                       ELSE 'general' END AS top_momentum_type
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)

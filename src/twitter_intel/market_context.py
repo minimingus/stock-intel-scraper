@@ -45,16 +45,18 @@ def ticker_context(ticker: str) -> dict:
     Return intraday context for a ticker:
       - change_pct: today's % change vs previous close
       - volume_ratio: today's volume vs 20-day average
+      - atr_pct: ATR(14) as a fraction of price (e.g. 0.04 = 4% daily range)
     """
     ticker = ticker.upper().strip()
     if ticker in _ticker_cache:
         return _ticker_cache[ticker].copy()
-    result = {"change_pct": None, "volume_ratio": None}
+    result = {"change_pct": None, "volume_ratio": None, "atr_pct": None}
     try:
+        import numpy as np
         t = yf.Ticker(ticker)
         # Today's intraday
         intraday = t.history(period="1d", interval="5m", auto_adjust=True)
-        # 20-day daily for volume avg
+        # 20-day daily for volume avg and ATR
         daily = t.history(period="25d", interval="1d", auto_adjust=True)
 
         if not intraday.empty and len(daily) >= 2:
@@ -71,6 +73,16 @@ def ticker_context(ticker: str) -> dict:
             today_vol = float(daily["Volume"].iloc[-1])
             if avg_vol > 0:
                 result["volume_ratio"] = today_vol / avg_vol
+
+        if len(daily) >= 15:
+            hi = daily["High"].iloc[-14:].values
+            lo = daily["Low"].iloc[-14:].values
+            pc = daily["Close"].iloc[-15:-1].values
+            tr = np.maximum(hi - lo, np.maximum(np.abs(hi - pc), np.abs(lo - pc)))
+            atr = float(tr.mean())
+            close = float(daily["Close"].iloc[-1])
+            if close > 0:
+                result["atr_pct"] = atr / close
     except Exception as e:
         logger.debug("Context fetch failed for %s: %s", ticker, e)
 

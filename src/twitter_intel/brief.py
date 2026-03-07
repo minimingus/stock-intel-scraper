@@ -1,4 +1,5 @@
 import logging
+import math
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -92,7 +93,14 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
     # Build expert lookup
     expert_map = {e["handle"]: e for e in expert_scores}
 
-    def _confidence(s: dict) -> tuple[str, float]:
+    _MOMENTUM_BADGE = {
+        "penny_pump": "🚀",
+        "wave_play": "〽️",
+        "breakout": "⚡",
+        "general": "",
+    }
+
+    def _confidence(s: dict, ctx: dict) -> tuple[str, float]:
         handles = [h.strip() for h in (s.get("experts") or "").split(",") if h.strip()]
         score = 0.0
         proven_count = 0
@@ -111,12 +119,42 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
             tier = "LOW"
         return tier, score
 
-    # Sort signals: HIGH first, then MEDIUM; drop LOW
+    def _momentum_score(s: dict, ctx: dict, entry: float | None) -> float:
+        """Compute an explosive-move multiplier based on volume, ATR, and momentum type."""
+        volume_ratio = ctx.get("volume_ratio") or 1.0
+        atr_pct = ctx.get("atr_pct") or 0.02
+        momentum_type = s.get("top_momentum_type", "general")
+
+        # Volume boost: every 1× above average adds 15%, capped at +60%
+        vol_boost = 1.0 + min(max(volume_ratio - 1.0, 0.0), 4.0) * 0.15
+        # ATR boost: higher daily range = higher explosive potential, cap at +40%
+        atr_boost = 1.0 + min(atr_pct * 10, 2.0) * 0.20
+        # Type bonus: penny pump and wave plays get priority
+        type_bonus = {"penny_pump": 1.4, "wave_play": 1.25, "breakout": 1.15, "general": 1.0}.get(momentum_type, 1.0)
+        # Penalize large caps with low volume (slow movers)
+        if entry is not None and entry > 150 and volume_ratio < 2.0:
+            vol_boost *= 0.5
+
+        return vol_boost * atr_boost * type_bonus
+
+    # Pre-fetch context for all tickers to compute momentum scores
+    _ctx_map: dict = {}
+    _entry_map: dict = {}
+    for s in signals:
+        tk = s["ticker"]
+        if tk not in _ctx_map:
+            _ctx_map[tk] = mctx.ticker_context(tk)
+            _entry_map[tk] = _fetch_price(tk)
+
+    # Sort signals: HIGH first, then MEDIUM; drop LOW; weighted by momentum
     tiered = []
     for s in signals:
-        tier, score = _confidence(s)
+        ctx_pre = _ctx_map.get(s["ticker"], {})
+        entry_pre = _entry_map.get(s["ticker"])
+        tier, score = _confidence(s, ctx_pre)
         if tier != "LOW":
-            tiered.append((tier, score, s))
+            mscore = _momentum_score(s, ctx_pre, entry_pre)
+            tiered.append((tier, score * mscore, s))
     tiered.sort(key=lambda x: (0 if x[0] == "HIGH" else 1, -x[1]))
 
     if tiered:
@@ -130,9 +168,11 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
             tier_icon = "🔥" if tier == "HIGH" else "🔵"
             n_experts = s["expert_count"]
 
-            ctx = mctx.ticker_context(ticker)
-            entry = _fetch_price(ticker)
+            ctx = _ctx_map.get(ticker) or mctx.ticker_context(ticker)
+            entry = _entry_map.get(ticker) or _fetch_price(ticker)
             avg_target = s.get("avg_target")
+            momentum_type = s.get("top_momentum_type", "general")
+            momentum_badge = _MOMENTUM_BADGE.get(momentum_type, "")
             ta_notes = _dedup_ta_notes(s.get("all_ta_notes"))
 
             entry_str = f"${entry:.2f}" if entry else "N/A"
@@ -193,8 +233,9 @@ def _build_brief(signals: list, expert_scores: list, store: TwitterIntelStore) -
 
             expert_handles = [f"@{h.strip()}" for h in (s.get("experts") or "").split(",") if h.strip()]
             experts_str = " ".join(expert_handles)
+            badge_str = f" {momentum_badge}" if momentum_badge else ""
             lines.append(
-                f"  {tier_icon} <b>${ticker}</b> — {trade_label} · Score {score:.3f}"
+                f"  {tier_icon} <b>${ticker}</b>{badge_str} — {trade_label} · Score {score:.3f}"
             )
             lines.append(f"     {experts_str}")
             price_line = f"     Entry: {entry_str}"
