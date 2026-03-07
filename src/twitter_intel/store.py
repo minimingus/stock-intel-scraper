@@ -127,6 +127,15 @@ class TwitterIntelStore:
         """).fetchall()
         return [dict(r) for r in rows]
 
+    def get_tweets_without_crypto_signals(self) -> list:
+        """Return tweets that have not yet been processed by the crypto extractor."""
+        rows = self.conn.execute("""
+            SELECT t.tweet_id, t.handle, t.text FROM tweets t
+            LEFT JOIN signals s ON s.tweet_id = t.tweet_id AND s.asset_type = 'crypto'
+            WHERE s.tweet_id IS NULL
+        """).fetchall()
+        return [dict(r) for r in rows]
+
     def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str,
                       trade_type: str = "day", target_price: float = None, ta_notes: str = None,
                       momentum_type: str = "general"):
@@ -171,6 +180,28 @@ class TwitterIntelStore:
         """, (f"-{lookback_hours} hours", min_expert_mentions)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_crypto_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
+        """Ranked crypto-only bullish signals aggregated by ticker."""
+        rows = self.conn.execute("""
+            SELECT s.ticker,
+                   COUNT(DISTINCT t.handle) AS expert_count,
+                   GROUP_CONCAT(DISTINCT t.handle) AS experts,
+                   SUM(CASE WHEN s.trade_type = 'day' THEN 1 ELSE 0 END) AS day_count,
+                   SUM(CASE WHEN s.trade_type = 'swing' THEN 1 ELSE 0 END) AS swing_count,
+                   AVG(CASE WHEN s.target_price > 0 THEN s.target_price ELSE NULL END) AS avg_target,
+                   MAX(COALESCE(t.tweet_time, t.scraped_at)) AS latest_signal_time
+            FROM signals s
+            JOIN tweets t ON t.tweet_id = s.tweet_id
+            WHERE s.extracted_at >= datetime('now', ?)
+              AND s.sentiment = 'bullish'
+              AND s.asset_type = 'crypto'
+            GROUP BY s.ticker
+            HAVING COUNT(DISTINCT t.handle) >= ?
+            ORDER BY expert_count DESC
+            LIMIT 20
+        """, (f"-{lookback_hours} hours", min_expert_mentions)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_signals_with_handles(self, lookback_hours: int = 168) -> list:
         """Return bullish stock signals with expert handle and actual tweet timestamp."""
         rows = self.conn.execute("""
@@ -198,6 +229,24 @@ class TwitterIntelStore:
                   AND pt.expert_handle = t.handle
             WHERE s.sentiment = 'bullish'
               AND s.asset_type = 'stock'
+              AND pt.id IS NULL
+        """).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_new_crypto_signal_trades(self) -> list:
+        """Return bullish crypto signals that have no paper trade opened yet."""
+        rows = self.conn.execute("""
+            SELECT s.id AS signal_id, s.ticker, s.target_price, s.ta_notes,
+                   t.handle, t.tweet_id,
+                   COALESCE(t.tweet_time, t.scraped_at) AS signal_time
+            FROM signals s
+            JOIN tweets t ON t.tweet_id = s.tweet_id
+            LEFT JOIN paper_trades pt
+                   ON pt.tweet_id = s.tweet_id
+                  AND pt.ticker = s.ticker
+                  AND pt.expert_handle = t.handle
+            WHERE s.sentiment = 'bullish'
+              AND s.asset_type = 'crypto'
               AND pt.id IS NULL
         """).fetchall()
         return [dict(r) for r in rows]
@@ -294,6 +343,17 @@ class TwitterIntelStore:
         if not row or not row["total"]:
             return None
         return dict(row)
+
+    def get_expert_recent_trades(self, handle: str, limit: int = 5) -> list:
+        """Return last N closed paper trades for an expert."""
+        rows = self.conn.execute("""
+            SELECT ticker, outcome, pnl_pct, closed_at
+            FROM paper_trades
+            WHERE expert_handle = ? AND outcome != 'open'
+            ORDER BY closed_at DESC
+            LIMIT ?
+        """, (handle, limit)).fetchall()
+        return [dict(r) for r in rows]
 
     def get_portfolio_summary(self) -> dict:
         """Cumulative P&L across all closed paper trades."""
