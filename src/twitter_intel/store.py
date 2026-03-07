@@ -79,6 +79,7 @@ class TwitterIntelStore:
             "ALTER TABLE paper_trades ADD COLUMN days_held REAL",
             "CREATE TABLE IF NOT EXISTS alerts_sent (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, sent_at TEXT NOT NULL, expert_handles TEXT NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_alerts_sent_ticker_time ON alerts_sent (ticker, sent_at)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_unique ON signals (tweet_id, ticker, asset_type)",
         ]:
             try:
                 self.conn.execute(migration)
@@ -140,7 +141,7 @@ class TwitterIntelStore:
                       trade_type: str = "day", target_price: float = None, ta_notes: str = None,
                       momentum_type: str = "general"):
         self.conn.execute(
-            "INSERT INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at, "
+            "INSERT OR IGNORE INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at, "
             "target_price, ta_notes, momentum_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (tweet_id, ticker, asset_type, sentiment, trade_type,
              datetime.now(timezone.utc).isoformat(), target_price, ta_notes, momentum_type),
