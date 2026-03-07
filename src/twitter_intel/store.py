@@ -343,6 +343,19 @@ class TwitterIntelStore:
         """).fetchall()
         return [dict(r) for r in rows]
 
+    def get_expert_signal_counts(self, lookback_days: int = 30) -> dict:
+        """Return {handle: signal_count} for bullish stock signals in the last N days."""
+        rows = self.conn.execute("""
+            SELECT t.handle, COUNT(*) AS cnt
+            FROM signals s
+            JOIN tweets t ON t.tweet_id = s.tweet_id
+            WHERE s.extracted_at >= datetime('now', ?)
+              AND s.sentiment = 'bullish'
+              AND s.asset_type = 'stock'
+            GROUP BY t.handle
+        """, (f"-{lookback_days} days",)).fetchall()
+        return {r["handle"]: r["cnt"] for r in rows}
+
     # kept for compatibility with old scorer
     def get_signals_for_brief(self, lookback_hours: int = 24, min_expert_mentions: int = 1) -> list:
         return self.get_stock_signals_for_brief(lookback_hours, min_expert_mentions)

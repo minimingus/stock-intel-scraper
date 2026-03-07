@@ -16,6 +16,11 @@ def _decay_weight(days_ago: float) -> float:
     return math.exp(-_DECAY_LAMBDA * days_ago)
 
 
+def _frequency_multiplier(calls_per_week: float) -> float:
+    """Penalise high-frequency callers. Returns a value in (0, 1] that decreases as volume increases."""
+    return 1.0 / math.log(calls_per_week + math.e)
+
+
 def _wilson_lower(wins: int, total: int, z: float = 1.96) -> float:
     """Lower bound of 95% Wilson confidence interval for win rate.
 
@@ -42,6 +47,7 @@ class ExpertScorer:
         Returns list sorted by adjusted_expectancy desc.
         """
         now = datetime.now(timezone.utc)
+        signal_counts = self.store.get_expert_signal_counts(lookback_days=30)
         raw_trades = self.store.get_expert_trades_for_scoring()
 
         by_expert: dict = defaultdict(list)
@@ -98,6 +104,9 @@ class ExpertScorer:
             losses = total - wins
             wilson_conf = _wilson_lower(wins, total)
             adjusted_expectancy = expectancy * wilson_conf
+            calls_per_week = signal_counts.get(handle, 1) / 4.0  # 30 days ≈ 4 weeks
+            freq_mult = _frequency_multiplier(calls_per_week)
+            adjusted_expectancy = adjusted_expectancy * freq_mult
             profit_factor = gross_win / (gross_loss or 0.0001)
 
             result.append({
@@ -112,6 +121,8 @@ class ExpertScorer:
                 "expectancy": expectancy,
                 "wilson_conf": wilson_conf,
                 "adjusted_expectancy": adjusted_expectancy,
+                "calls_per_week": calls_per_week,
+                "freq_multiplier": freq_mult,
                 "profit_factor": profit_factor,
                 "avg_max_gain": max_gain_w / total_w if total_w else 0.0,
                 "avg_max_drawdown": max_dd_w / total_w if total_w else 0.0,
