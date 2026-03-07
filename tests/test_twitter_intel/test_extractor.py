@@ -101,3 +101,33 @@ def test_run_processes_all_new_tweets(store):
         extractor = SignalExtractor(store)
         count = extractor.run()
     assert count == 1
+
+
+def test_retweet_is_skipped():
+    """Retweet tweets must never produce signals."""
+    from unittest.mock import MagicMock
+    from src.twitter_intel.extractor import SignalExtractor
+
+    store = MagicMock()
+    extractor = SignalExtractor(store)
+    tweets = [
+        {"tweet_id": "1", "text": "RT @sometrader: $AAPL breaking out buy here bullish setup"},
+        {"tweet_id": "2", "text": "via @guru: $TSLA long momentum play pump"},
+    ]
+    result = extractor.extract_batch(tweets)
+    assert result == 0
+    store.insert_signal.assert_not_called()
+
+
+def test_original_tweet_is_not_skipped():
+    """Non-retweet bullish tweets with TA must produce signals."""
+    from unittest.mock import MagicMock
+    from src.twitter_intel.extractor import SignalExtractor
+
+    store = MagicMock()
+    extractor = SignalExtractor(store)
+    tweets = [
+        {"tweet_id": "3", "text": "$AAPL breaking out, bullish setup, buy here"},
+    ]
+    extractor.extract_batch(tweets)
+    assert store.insert_signal.called

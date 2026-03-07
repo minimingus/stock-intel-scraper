@@ -70,6 +70,24 @@ _TARGET_PRICE = re.compile(
     re.IGNORECASE,
 )
 
+# Entry zone: "entry at $142", "buy zone $140-145", "looking to add @ $138"
+_ENTRY_PRICE = re.compile(
+    r"\b(?:entry|buy|long|load|add|enter|entering|looking\s+(?:to\s+)?(?:buy|add|enter))"
+    r"(?:[^$\d]{0,25})\$?([\d]+(?:\.[\d]+)?)"
+    r"(?:\s*[-–to]+\s*\$?([\d]+(?:\.[\d]+)?))?",
+    re.IGNORECASE,
+)
+
+# Stop loss: "stop at $135", "SL $130", "cut below $128", "stop loss 132"
+_STOP_LOSS = re.compile(
+    r"\b(?:stop|sl|s/l|stop.?loss|cut|stops?|invalidat|risk)\b"
+    r"(?:[^$\d]{0,20})\$?([\d]+(?:\.[\d]+)?)",
+    re.IGNORECASE,
+)
+
+# Retweet detection — tweets starting with RT @ or "via @" are not original picks
+_RETWEET = re.compile(r'^\s*(?:RT|via)\s+@', re.IGNORECASE)
+
 
 def _momentum_type(text: str) -> str:
     """Classify the explosive-move type mentioned in the tweet."""
@@ -106,6 +124,32 @@ def _extract_target_price(text: str) -> float | None:
         except ValueError:
             pass
     return None
+
+
+def _extract_entry_price(text: str) -> float | None:
+    """Return midpoint of entry zone if range given, else single value."""
+    m = _ENTRY_PRICE.search(text)
+    if not m:
+        return None
+    try:
+        low = float(m.group(1))
+        high_str = m.group(2)
+        if high_str:
+            high = float(high_str)
+            return (low + high) / 2.0
+        return low
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_stop_price(text: str) -> float | None:
+    m = _STOP_LOSS.search(text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except (ValueError, TypeError):
+        return None
 
 
 def _extract_ta_notes(text: str) -> str:
@@ -150,14 +194,25 @@ class SignalExtractor:
             text = tweet.get("text", "")
             tweet_id = tweet["tweet_id"]
 
-            if not _TA_OR_PUMP.search(text):
+            if _RETWEET.search(text):
                 continue
 
             sentiment = _sentiment(text)
+            # Only extract bullish signals — skip neutral/bearish tweets
+            if sentiment != "bullish":
+                continue
+
             trade_type = _trade_type(text)
             target_price = _extract_target_price(text)
             ta_notes = _extract_ta_notes(text)
             momentum_type = _momentum_type(text)
+            entry_price_suggested = _extract_entry_price(text)
+            stop_price_suggested = _extract_stop_price(text)
+
+            if entry_price_suggested:
+                logger.debug("Entry zone parsed: $%.2f from tweet %s", entry_price_suggested, tweet_id)
+            if stop_price_suggested:
+                logger.debug("Stop level parsed: $%.2f from tweet %s", stop_price_suggested, tweet_id)
 
             for ticker in _extract_stock_tickers(text):
                 try:
@@ -170,6 +225,8 @@ class SignalExtractor:
                         target_price=target_price,
                         ta_notes=ta_notes,
                         momentum_type=momentum_type,
+                        entry_price_suggested=entry_price_suggested,
+                        stop_price_suggested=stop_price_suggested,
                     )
                     count += 1
                 except Exception as e:
