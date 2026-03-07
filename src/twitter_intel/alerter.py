@@ -18,6 +18,7 @@ _ALERT_COOLDOWN_HOURS = 4
 _PUMP_COOLDOWN_HOURS = 2
 _PUMP_MAX_PRICE = 10.0
 _PUMP_MIN_VOL_RATIO = 5.0
+_PUMP_MAX_MARKET_CAP = 500_000_000  # <$500M market cap = small cap / penny territory
 
 
 def _format_alert(ticker: str, entries: list, store: TwitterIntelStore) -> str:
@@ -115,15 +116,16 @@ def run_alert_check(store: TwitterIntelStore, scorer) -> int:
     return sent
 
 
-def _format_pump_alert(ticker: str, handles: list, price: float, ctx: dict) -> str:
+def _format_pump_alert(ticker: str, handles: list, price: float, ctx: dict, mktcap: int | None = None) -> str:
     vol = ctx.get("volume_ratio")
     change = ctx.get("change_pct")
     vol_str = f"{vol:.1f}×" if vol is not None else "?"
     change_str = f"{change*100:+.1f}%" if change is not None else "?"
+    cap_str = f" · MCap ${mktcap//1_000_000}M" if mktcap else ""
     handle_strs = " ".join(f"@{h}" for h in handles)
     return (
         f"🚨🚀 <b>PENNY PUMP ALERT — ${ticker}</b>\n\n"
-        f"Price: <b>${price:.2f}</b> · Vol {vol_str} avg · Today: {change_str}\n"
+        f"Price: <b>${price:.2f}</b>{cap_str} · Vol {vol_str} avg · Today: {change_str}\n"
         f"Mentioned by: {handle_strs}\n\n"
         f"<i>Low-float / penny pump pattern — high risk, fast moves</i>"
     )
@@ -133,6 +135,14 @@ def _fetch_price(ticker: str) -> float | None:
     try:
         hist = yf.Ticker(ticker).history(period="1d", interval="5m")
         return float(hist["Close"].iloc[-1]) if not hist.empty else None
+    except Exception:
+        return None
+
+
+def _fetch_market_cap(ticker: str) -> int | None:
+    try:
+        info = yf.Ticker(ticker).info
+        return info.get("marketCap") or info.get("market_cap")
     except Exception:
         return None
 
@@ -175,7 +185,12 @@ def run_penny_pump_check(store: TwitterIntelStore) -> int:
         if price is None or price >= _PUMP_MAX_PRICE:
             continue
 
-        msg = _format_pump_alert(ticker, handles, price, ctx)
+        mktcap = _fetch_market_cap(ticker)
+        if mktcap is not None and mktcap >= _PUMP_MAX_MARKET_CAP:
+            logger.debug("Skipping %s — market cap $%dM too large for pump alert", ticker, mktcap // 1_000_000)
+            continue
+
+        msg = _format_pump_alert(ticker, handles, price, ctx, mktcap)
         try:
             resp = requests.post(
                 f"https://api.telegram.org/bot{token}/sendMessage",
@@ -184,7 +199,8 @@ def run_penny_pump_check(store: TwitterIntelStore) -> int:
             )
             resp.raise_for_status()
             store.record_alert_sent(ticker, handles)
-            logger.info("Pump alert sent for %s @ $%.2f (vol %.1fx)", ticker, price, volume_ratio)
+            cap_m = mktcap // 1_000_000 if mktcap else "?"
+            logger.info("Pump alert sent for %s @ $%.2f (vol %.1fx, mcap $%sM)", ticker, price, volume_ratio, cap_m)
             sent += 1
         except Exception as e:
             logger.error("Pump alert send failed for %s: %s", ticker, e)
