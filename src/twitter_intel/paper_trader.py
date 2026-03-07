@@ -9,6 +9,14 @@ logger = logging.getLogger(__name__)
 _STOP_LOSS_PCT = 0.05   # 5% below entry = stop out
 _EXPIRE_DAYS = 5        # close as 'expired' if neither target nor stop hit within 5 days
 
+
+def _to_yf_crypto_ticker(ticker: str) -> str:
+    """Convert bare crypto ticker to yfinance symbol, e.g. BTC -> BTC-USD."""
+    if ticker.endswith("-USD"):
+        return ticker
+    return f"{ticker}-USD"
+
+
 _price_cache: dict = {}
 
 
@@ -106,6 +114,54 @@ def open_trades_for_new_signals(store) -> int:
         )
         logger.info(
             "Opened paper trade: %s @ $%.2f → $%.2f (stop $%.2f) for @%s",
+            ticker, price, target, stop, sig["handle"],
+        )
+        opened += 1
+    return opened
+
+
+def open_crypto_trades_for_new_signals(store) -> int:
+    """Open paper trades for bullish crypto signals not yet tracked. Returns count opened."""
+    new_signals = store.get_new_crypto_signal_trades()
+    opened = 0
+    for sig in new_signals:
+        ticker = _to_yf_crypto_ticker(sig["ticker"])  # e.g. BTC-USD
+        signal_time = sig.get("signal_time") or datetime.now(timezone.utc).isoformat()
+
+        try:
+            st = datetime.fromisoformat(signal_time)
+            if st.tzinfo is None:
+                st = st.replace(tzinfo=timezone.utc)
+            age_hours = (datetime.now(timezone.utc) - st).total_seconds() / 3600
+            if age_hours > 1.0:
+                logger.debug("Skipping stale crypto signal %s (%.1fh old)", ticker, age_hours)
+                continue
+        except Exception:
+            pass
+
+        if not sig.get("target_price"):
+            logger.debug("Skipping %s — no explicit price target in tweet", ticker)
+            continue
+
+        price = _current_price(ticker)
+        if price is None:
+            logger.debug("No price for %s, skipping crypto paper trade", ticker)
+            continue
+
+        target = sig["target_price"]
+        stop = _atr_stop(ticker, price)
+
+        store.open_paper_trade(
+            ticker=ticker,
+            expert_handle=sig["handle"],
+            tweet_id=sig["tweet_id"],
+            entry_price=price,
+            target_price=target,
+            stop_price=stop,
+            signal_time=signal_time,
+        )
+        logger.info(
+            "Opened crypto paper trade: %s @ $%.2f → $%.2f (stop $%.2f) for @%s",
             ticker, price, target, stop, sig["handle"],
         )
         opened += 1
