@@ -86,7 +86,7 @@ _STOP_LOSS = re.compile(
 )
 
 # Retweet detection — tweets starting with RT @ or "via @" are not original picks
-_RETWEET = re.compile(r'^\s*(?:RT|via)\s+@', re.IGNORECASE)
+_RETWEET = re.compile(r'^\s*(?:RT|via)\s+@')
 
 
 def _momentum_type(text: str) -> str:
@@ -152,6 +152,18 @@ def _extract_stop_price(text: str) -> float | None:
         return None
 
 
+def _tweet_specificity(text: str) -> int:
+    """Score 0-3: how actionable is this tweet? +1 per parsed level (entry/stop/target)."""
+    score = 0
+    if _extract_entry_price(text) is not None:
+        score += 1
+    if _extract_stop_price(text) is not None:
+        score += 1
+    if _extract_target_price(text) is not None:
+        score += 1
+    return score
+
+
 def _extract_ta_notes(text: str) -> str:
     """Extract up to 2 short TA context snippets from tweet text."""
     notes = []
@@ -194,7 +206,7 @@ class SignalExtractor:
             text = tweet.get("text", "")
             tweet_id = tweet["tweet_id"]
 
-            if _RETWEET.search(text):
+            if _RETWEET.match(text):
                 continue
 
             sentiment = _sentiment(text)
@@ -208,6 +220,7 @@ class SignalExtractor:
             momentum_type = _momentum_type(text)
             entry_price_suggested = _extract_entry_price(text)
             stop_price_suggested = _extract_stop_price(text)
+            specificity = _tweet_specificity(text)
 
             if entry_price_suggested:
                 logger.debug("Entry zone parsed: $%.2f from tweet %s", entry_price_suggested, tweet_id)
@@ -227,6 +240,7 @@ class SignalExtractor:
                         momentum_type=momentum_type,
                         entry_price_suggested=entry_price_suggested,
                         stop_price_suggested=stop_price_suggested,
+                        specificity=specificity,
                     )
                     count += 1
                 except Exception as e:

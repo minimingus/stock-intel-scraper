@@ -131,3 +131,21 @@ def test_original_tweet_is_not_skipped():
     ]
     extractor.extract_batch(tweets)
     assert store.insert_signal.called
+
+
+def test_specificity_zero_for_vague_tweet():
+    from src.twitter_intel.extractor import _tweet_specificity
+    text = "$AAPL looking bullish, buy the breakout"
+    assert _tweet_specificity(text) == 0
+
+
+def test_specificity_three_for_full_setup():
+    from src.twitter_intel.extractor import _tweet_specificity
+    text = "Entry $145, stop $138, target $160 on $AAPL"
+    assert _tweet_specificity(text) == 3
+
+
+def test_specificity_one_for_stop_only():
+    from src.twitter_intel.extractor import _tweet_specificity
+    text = "$AAPL bullish. Stop $138 if it breaks down."
+    assert _tweet_specificity(text) == 1

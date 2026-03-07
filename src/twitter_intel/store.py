@@ -16,7 +16,8 @@ class TwitterIntelStore:
                 handle      TEXT PRIMARY KEY,
                 source      TEXT NOT NULL,
                 added_date  TEXT NOT NULL,
-                active      INTEGER NOT NULL DEFAULT 1
+                active      INTEGER NOT NULL DEFAULT 1,
+                author_id   TEXT
             );
             CREATE TABLE IF NOT EXISTS tweets (
                 tweet_id    TEXT PRIMARY KEY,
@@ -69,6 +70,7 @@ class TwitterIntelStore:
         """)
         # Migrate existing DBs
         for migration in [
+            "ALTER TABLE experts ADD COLUMN author_id TEXT",
             "ALTER TABLE signals ADD COLUMN trade_type TEXT NOT NULL DEFAULT 'day'",
             "ALTER TABLE tweets ADD COLUMN tweet_time TEXT",
             "ALTER TABLE signals ADD COLUMN target_price REAL",
@@ -80,6 +82,9 @@ class TwitterIntelStore:
             "CREATE TABLE IF NOT EXISTS alerts_sent (id INTEGER PRIMARY KEY AUTOINCREMENT, ticker TEXT NOT NULL, sent_at TEXT NOT NULL, expert_handles TEXT NOT NULL)",
             "CREATE INDEX IF NOT EXISTS idx_alerts_sent_ticker_time ON alerts_sent (ticker, sent_at)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_signals_unique ON signals (tweet_id, ticker, asset_type)",
+            "ALTER TABLE signals ADD COLUMN entry_price_suggested REAL",
+            "ALTER TABLE signals ADD COLUMN stop_price_suggested REAL",
+            "ALTER TABLE signals ADD COLUMN specificity INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 self.conn.execute(migration)
@@ -111,6 +116,22 @@ class TwitterIntelStore:
         ).fetchall()
         return [r["handle"] for r in rows]
 
+    def deactivate_expert(self, handle: str):
+        self.conn.execute("UPDATE experts SET active = 0 WHERE handle = ?", (handle,))
+        self.conn.commit()
+
+    def set_author_id(self, handle: str, author_id: str):
+        self.conn.execute(
+            "UPDATE experts SET author_id = ? WHERE handle = ?", (author_id, handle)
+        )
+        self.conn.commit()
+
+    def get_experts_with_author_ids(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT handle, author_id FROM experts WHERE active = 1 AND author_id IS NOT NULL"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def insert_tweet(self, tweet_id: str, handle: str, text: str, likes: int, retweets: int, tweet_time: str = None):
         self.conn.execute(
             "INSERT OR IGNORE INTO tweets (tweet_id, handle, text, likes, retweets, scraped_at, tweet_time) "
@@ -139,12 +160,15 @@ class TwitterIntelStore:
 
     def insert_signal(self, tweet_id: str, ticker: str, asset_type: str, sentiment: str,
                       trade_type: str = "day", target_price: float = None, ta_notes: str = None,
-                      momentum_type: str = "general"):
+                      momentum_type: str = "general", entry_price_suggested: float = None,
+                      stop_price_suggested: float = None, specificity: int = 0):
         self.conn.execute(
             "INSERT OR IGNORE INTO signals (tweet_id, ticker, asset_type, sentiment, trade_type, extracted_at, "
-            "target_price, ta_notes, momentum_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "target_price, ta_notes, momentum_type, entry_price_suggested, stop_price_suggested, specificity) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (tweet_id, ticker, asset_type, sentiment, trade_type,
-             datetime.now(timezone.utc).isoformat(), target_price, ta_notes, momentum_type),
+             datetime.now(timezone.utc).isoformat(), target_price, ta_notes, momentum_type,
+             entry_price_suggested, stop_price_suggested, specificity),
         )
         self.conn.commit()
 
@@ -168,7 +192,8 @@ class TwitterIntelStore:
                        WHEN 4 THEN 'penny_pump'
                        WHEN 3 THEN 'wave_play'
                        WHEN 2 THEN 'breakout'
-                       ELSE 'general' END AS top_momentum_type
+                       ELSE 'general' END AS top_momentum_type,
+                   AVG(CASE WHEN s.stop_price_suggested IS NOT NULL THEN s.stop_price_suggested END) AS expert_stop
             FROM signals s
             JOIN tweets t ON t.tweet_id = s.tweet_id
             WHERE s.extracted_at >= datetime('now', ?)
@@ -220,6 +245,7 @@ class TwitterIntelStore:
         """Return bullish stock signals that have no paper trade opened yet."""
         rows = self.conn.execute("""
             SELECT s.id AS signal_id, s.ticker, s.target_price, s.ta_notes,
+                   s.entry_price_suggested, s.stop_price_suggested,
                    t.handle, t.tweet_id,
                    COALESCE(t.tweet_time, t.scraped_at) AS signal_time
             FROM signals s
