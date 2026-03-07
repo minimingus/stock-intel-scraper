@@ -34,6 +34,37 @@ def _current_price(ticker: str) -> float | None:
     return None
 
 
+# US market hours in UTC: 14:30–21:00
+_MARKET_OPEN_UTC = 14 * 60 + 30   # minutes since midnight
+_MARKET_CLOSE_UTC = 21 * 60        # minutes since midnight
+
+
+def _is_market_hours(dt: datetime) -> bool:
+    """Return True if dt falls within regular US equity market hours (UTC)."""
+    mins = dt.hour * 60 + dt.minute
+    return _MARKET_OPEN_UTC <= mins < _MARKET_CLOSE_UTC
+
+
+def _price_at(ticker: str, at: datetime) -> float | None:
+    """Fetch price at or just after `at`. Uses 5-min bars during market hours, 1h otherwise."""
+    interval = "5m" if _is_market_hours(at) else "1h"
+    try:
+        start = at.date().isoformat()
+        end_dt = at + timedelta(days=2)
+        end = end_dt.date().isoformat()
+        hist = yf.Ticker(ticker).history(start=start, end=end, interval=interval, auto_adjust=True)
+        if hist.empty:
+            return None
+        hist.index = hist.index.tz_convert("UTC")
+        after = hist[hist.index >= at]
+        if not after.empty:
+            return float(after["Close"].iloc[0])
+        return float(hist["Close"].iloc[-1])
+    except Exception as e:
+        logger.debug("Historical price fetch failed for %s at %s: %s", ticker, at, e)
+    return None
+
+
 def _price_history_since(ticker: str, since: datetime):
     """
     Fetch hourly OHLC history from `since` to now.
@@ -79,29 +110,49 @@ def open_trades_for_new_signals(store) -> int:
         ticker = sig["ticker"]
         signal_time = sig.get("signal_time") or datetime.now(timezone.utc).isoformat()
 
-        # Skip stale signals
+        # Determine if signal is recent (< 1h) or historical
+        signal_dt = None
         try:
-            st = datetime.fromisoformat(signal_time)
-            if st.tzinfo is None:
-                st = st.replace(tzinfo=timezone.utc)
-            age_hours = (datetime.now(timezone.utc) - st).total_seconds() / 3600
-            if age_hours > 1.0:
-                logger.debug("Skipping stale signal %s (%.1fh old)", ticker, age_hours)
-                continue
+            signal_dt = datetime.fromisoformat(signal_time)
+            if signal_dt.tzinfo is None:
+                signal_dt = signal_dt.replace(tzinfo=timezone.utc)
         except Exception:
             pass
 
-        if not sig.get("target_price"):
-            logger.debug("Skipping %s — no explicit price target in tweet", ticker)
-            continue
+        age_hours = (datetime.now(timezone.utc) - signal_dt).total_seconds() / 3600 if signal_dt else 0
 
-        price = _current_price(ticker)
+        if age_hours <= 1.0:
+            price = _current_price(ticker)
+        else:
+            # Historical signal: fetch price at the time of the tweet
+            price = _price_at(ticker, signal_dt) if signal_dt else None
         if price is None:
             logger.debug("No price for %s, skipping paper trade", ticker)
             continue
 
-        target = sig["target_price"]
-        stop = _atr_stop(ticker, price)
+        # Entry zone validation: skip if price is >15% above suggested entry
+        entry_suggested = sig.get("entry_price_suggested")
+        if entry_suggested and price > entry_suggested * 1.15:
+            logger.info(
+                "Skipped %s for @%s: price $%.2f is >15%% above suggested entry $%.2f",
+                ticker, sig["handle"], price, entry_suggested,
+            )
+            continue
+
+        # Use explicit target if available, otherwise default to +10% from entry
+        explicit_target = sig.get("target_price")
+        target = explicit_target if explicit_target and explicit_target > price else price * 1.10
+
+        # Use expert-specified stop if plausible (5-20% below entry), else ATR
+        stop_suggested = sig.get("stop_price_suggested")
+        if stop_suggested and price * 0.80 <= stop_suggested <= price * 0.95:
+            stop = stop_suggested
+            stop_source = "expert"
+        else:
+            stop = _atr_stop(ticker, price)
+            stop_source = "ATR"
+
+        rr = (target - price) / (price - stop) if price > stop else None
 
         store.open_paper_trade(
             ticker=ticker,
@@ -112,9 +163,12 @@ def open_trades_for_new_signals(store) -> int:
             stop_price=stop,
             signal_time=signal_time,
         )
+        rr_str = f" R:R 1:{rr:.1f}" if rr else ""
         logger.info(
-            "Opened paper trade: %s @ $%.2f → $%.2f (stop $%.2f) for @%s",
-            ticker, price, target, stop, sig["handle"],
+            "Opened paper trade: %s @ $%.2f → $%.2f%s (stop $%.2f [%s])%s for @%s",
+            ticker, price, target,
+            "" if explicit_target else " [default +10%]",
+            stop, stop_source, rr_str, sig["handle"],
         )
         opened += 1
     return opened
@@ -128,27 +182,26 @@ def open_crypto_trades_for_new_signals(store) -> int:
         ticker = _to_yf_crypto_ticker(sig["ticker"])  # e.g. BTC-USD
         signal_time = sig.get("signal_time") or datetime.now(timezone.utc).isoformat()
 
+        signal_dt = None
         try:
-            st = datetime.fromisoformat(signal_time)
-            if st.tzinfo is None:
-                st = st.replace(tzinfo=timezone.utc)
-            age_hours = (datetime.now(timezone.utc) - st).total_seconds() / 3600
-            if age_hours > 1.0:
-                logger.debug("Skipping stale crypto signal %s (%.1fh old)", ticker, age_hours)
-                continue
+            signal_dt = datetime.fromisoformat(signal_time)
+            if signal_dt.tzinfo is None:
+                signal_dt = signal_dt.replace(tzinfo=timezone.utc)
         except Exception:
             pass
 
-        if not sig.get("target_price"):
-            logger.debug("Skipping %s — no explicit price target in tweet", ticker)
-            continue
+        age_hours = (datetime.now(timezone.utc) - signal_dt).total_seconds() / 3600 if signal_dt else 0
 
-        price = _current_price(ticker)
+        if age_hours <= 1.0:
+            price = _current_price(ticker)
+        else:
+            price = _price_at(ticker, signal_dt) if signal_dt else None
         if price is None:
             logger.debug("No price for %s, skipping crypto paper trade", ticker)
             continue
 
-        target = sig["target_price"]
+        explicit_target = sig.get("target_price")
+        target = explicit_target if explicit_target and explicit_target > price else price * 1.10
         stop = _atr_stop(ticker, price)
 
         store.open_paper_trade(
@@ -161,8 +214,10 @@ def open_crypto_trades_for_new_signals(store) -> int:
             signal_time=signal_time,
         )
         logger.info(
-            "Opened crypto paper trade: %s @ $%.2f → $%.2f (stop $%.2f) for @%s",
-            ticker, price, target, stop, sig["handle"],
+            "Opened crypto paper trade: %s @ $%.2f → $%.2f%s (stop $%.2f) for @%s",
+            ticker, price, target,
+            "" if explicit_target else " [default +10%]",
+            stop, sig["handle"],
         )
         opened += 1
     return opened
@@ -192,7 +247,19 @@ def evaluate_open_trades(store) -> int:
         if opened_at.tzinfo is None:
             opened_at = opened_at.replace(tzinfo=timezone.utc)
 
-        hist = _price_history_since(ticker, opened_at)
+        # Use signal_time as trade start for historical accuracy; fall back to opened_at
+        trade_start = opened_at
+        raw_signal_time = trade.get("signal_time")
+        if raw_signal_time:
+            try:
+                st = datetime.fromisoformat(raw_signal_time)
+                if st.tzinfo is None:
+                    st = st.replace(tzinfo=timezone.utc)
+                trade_start = st
+            except Exception:
+                pass
+
+        hist = _price_history_since(ticker, trade_start)
 
         if hist is None or hist.empty:
             # Fall back to current price only
@@ -200,7 +267,7 @@ def evaluate_open_trades(store) -> int:
             if price is None:
                 continue
             pnl_pct = (price - entry) / entry
-            if (now - opened_at) >= timedelta(days=_EXPIRE_DAYS):
+            if (now - trade_start) >= timedelta(days=_EXPIRE_DAYS):
                 store.close_paper_trade(trade["id"], price, "expired", pnl_pct)
                 closed += 1
             continue
@@ -231,7 +298,7 @@ def evaluate_open_trades(store) -> int:
             outcome = "loss"
             exit_price = stop
             exit_time = stop_time
-        elif (now - opened_at) >= timedelta(days=_EXPIRE_DAYS):
+        elif (now - trade_start) >= timedelta(days=_EXPIRE_DAYS):
             outcome = "expired"
             exit_price = float(hist["Close"].iloc[-1])
             exit_time = now
