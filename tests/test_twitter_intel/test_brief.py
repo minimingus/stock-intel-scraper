@@ -11,53 +11,44 @@ def store_with_signals(tmp_path):
     s.upsert_expert("b")
     s.insert_tweet("t1", "a", "", 0, 0)
     s.insert_tweet("t2", "b", "", 0, 0)
-    s.insert_signal("t1", "BTC", "crypto", "bullish")
-    s.insert_signal("t2", "BTC", "crypto", "bullish")
+    s.insert_signal("t1", "AAPL", "stock", "bullish")
+    s.insert_signal("t2", "AAPL", "stock", "bullish")
     return s
 
 
-def _mock_claude(text: str):
-    mock_msg = MagicMock()
-    mock_msg.content = [MagicMock(text=text)]
-    mock_client = MagicMock()
-    mock_client.messages.create.return_value = mock_msg
-    return mock_client
-
-
 def test_generate_returns_string_with_stats_footer(store_with_signals):
-    mock_client = _mock_claude("📊 *Daily Trading Brief*\n\nBTC is hot")
-    with patch("src.twitter_intel.brief.Anthropic", return_value=mock_client), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
-        text = gen.generate()
+    gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
+    text = gen.generate()
     assert "📡" in text
     assert "Monitoring" in text
 
 
 def test_generate_no_signals_returns_placeholder(tmp_path):
     store = TwitterIntelStore(db_path=str(tmp_path / "empty.db"))
-    with patch("src.twitter_intel.brief.Anthropic"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        gen = BriefGenerator(store, min_expert_mentions=2)
-        text = gen.generate()
-    assert "No significant signals" in text
+    gen = BriefGenerator(store, min_expert_mentions=2)
+    text = gen.generate()
+    assert "No qualified experts" in text or "No signals from proven experts" in text
 
 
 def test_generate_respects_min_expert_mentions(store_with_signals):
-    """With min_expert_mentions=3 and only 2 experts, should return placeholder."""
-    with patch("src.twitter_intel.brief.Anthropic"), \
-         patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test"}):
-        gen = BriefGenerator(store_with_signals, min_expert_mentions=3)
-        text = gen.generate()
-    assert "No significant signals" in text
+    """With min_expert_mentions=3 and only 2 experts, signals section shows no qualified signals."""
+    gen = BriefGenerator(store_with_signals, min_expert_mentions=3)
+    text = gen.generate()
+    # No signals meet the threshold so the signals section should show placeholder
+    assert "No signals from proven experts" in text or "No qualified experts" in text
+
+
+def test_two_section_structure(store_with_signals):
+    """Brief must contain both expected section headers."""
+    gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
+    text = gen.generate()
+    assert "TOP EXPERTS" in text
+    assert "SIGNALS TO WATCH" in text
 
 
 def test_send_calls_telegram_api(store_with_signals):
-    mock_client = _mock_claude("📊 Brief content")
-    with patch("src.twitter_intel.brief.Anthropic", return_value=mock_client), \
-         patch("src.twitter_intel.brief.requests.post") as mock_post, \
+    with patch("src.twitter_intel.brief.requests.post") as mock_post, \
          patch.dict("os.environ", {
-             "ANTHROPIC_API_KEY": "test",
              "TELEGRAM_BOT_TOKEN": "tok",
              "TELEGRAM_CHAT_ID": "123",
          }):
@@ -74,11 +65,8 @@ def test_send_calls_telegram_api(store_with_signals):
 
 def test_send_saves_fallback_file_on_telegram_failure(store_with_signals, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    mock_client = _mock_claude("📊 Brief content")
-    with patch("src.twitter_intel.brief.Anthropic", return_value=mock_client), \
-         patch("src.twitter_intel.brief.requests.post", side_effect=Exception("down")), \
+    with patch("src.twitter_intel.brief.requests.post", side_effect=Exception("down")), \
          patch.dict("os.environ", {
-             "ANTHROPIC_API_KEY": "test",
              "TELEGRAM_BOT_TOKEN": "tok",
              "TELEGRAM_CHAT_ID": "123",
          }):

@@ -3,12 +3,15 @@
 Manual trigger for Twitter Intel.
 
 Usage:
-    python scripts/run_intel.py scrape              # scrape + extract signals now
-    python scripts/run_intel.py brief               # generate + send brief now
-    python scripts/run_intel.py start               # start the scheduler (blocking)
-    python scripts/run_intel.py backfill            # deep-scrape all new experts
-    python scripts/run_intel.py backfill handle1,handle2  # deep-scrape specific handles
-    python scripts/run_intel.py alert               # run alert check and send alerts
+    python scripts/run_intel.py scrape                          # scrape + extract signals now
+    python scripts/run_intel.py brief                           # generate + send brief now
+    python scripts/run_intel.py start                           # start the scheduler (blocking)
+    python scripts/run_intel.py backfill                        # deep-scrape all new experts
+    python scripts/run_intel.py backfill handle1,handle2        # deep-scrape specific handles
+    python scripts/run_intel.py deep_backfill handle1,handle2   # 3-month cursor pagination
+    python scripts/run_intel.py prune                           # deactivate underperformers
+    python scripts/run_intel.py discover handle1,handle2        # discover experts via following
+    python scripts/run_intel.py alert                           # run alert check and send alerts
 """
 import logging
 import sys
@@ -48,6 +51,22 @@ def main():
             if len(sys.argv) > 2 and sys.argv[2]:
                 handles = [h.strip() for h in sys.argv[2].split(",") if h.strip()]
             sched.backfill_experts(store, scraper, extractor, handles)
+        elif cmd == "deep_backfill":
+            handles = [h.strip() for h in sys.argv[2].split(",") if h.strip()] if len(sys.argv) > 2 else store.get_active_experts()
+            sched.deep_backfill_experts(store, extractor, handles, months_back=3)
+        elif cmd == "prune":
+            deactivated = sched.prune_underperforming_experts(store)
+            if deactivated:
+                logger.info("Deactivated: %s", ", ".join(f"@{h}" for h in deactivated))
+            else:
+                logger.info("No experts pruned (none meet deactivation criteria yet)")
+        elif cmd == "discover":
+            handles = [h.strip() for h in sys.argv[2].split(",") if h.strip()] if len(sys.argv) > 2 else []
+            if not handles:
+                logger.error("discover requires comma-separated handles: discover handle1,handle2")
+            else:
+                added = sched.discover_from_following(store, handles)
+                logger.info("Discovered %d new experts", added)
         elif cmd == "alert":
             scorer = ExpertScorer(store)
             sent = alert_module.run_alert_check(store, scorer)

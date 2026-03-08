@@ -65,6 +65,8 @@ twitter_intel:
   scrape_interval_hours: 4
   lookback_hours: 24
   min_expert_mentions: 1
+  proven_min_trades: 5
+  proven_min_win_rate: 0.40
 
   auto_expand:
     enabled: true
@@ -103,6 +105,7 @@ twitter_intel:
     - UrbanKaoboy
     - Convertbond
     - timothysykes
+    - Jackaroo_Trades
     - MichaelGoode
     - KylesDayTrades
     - bullsonwallst

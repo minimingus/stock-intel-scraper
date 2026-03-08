@@ -26,10 +26,17 @@ def _parse_created_at(s: str) -> Optional[str]:
         return None
 
 
-def _bird_cmd() -> str:
-    """Return path to bird Twitter CLI. Uses BIRD_BIN env var to avoid collision with
-    the system 'bird' routing daemon present on Linux."""
-    return os.environ.get("BIRD_BIN", "bird")
+def _bird_base_args() -> list:
+    """Return base bird CLI command with optional credentials from env vars.
+    Uses BIRD_BIN env var to avoid collision with the system 'bird' routing daemon."""
+    cmd = [os.environ.get("BIRD_BIN", "bird")]
+    auth_token = os.environ.get("AUTH_TOKEN")
+    ct0 = os.environ.get("CT0")
+    if auth_token:
+        cmd += ["--auth-token", auth_token]
+    if ct0:
+        cmd += ["--ct0", ct0]
+    return cmd
 
 
 def _parse_tweets(raw: list) -> list:
@@ -58,7 +65,7 @@ def _run_user_tweets(handle: str, cursor: str = None) -> "tuple[list, Optional[s
     Run one page-batch of bird user-tweets (up to 200 tweets, 10 pages).
     Returns (tweets, next_cursor). next_cursor is None if no more pages.
     """
-    cmd = [_bird_cmd(), "user-tweets", handle, "-n", "200", "--max-pages", "10", "--json"]
+    cmd = _bird_base_args() + ["user-tweets", handle, "-n", "200", "--max-pages", "10", "--json"]
     if cursor:
         cmd += ["--cursor", cursor]
     try:
@@ -157,7 +164,7 @@ def get_following(user_id: str, max_count: int = 200) -> list:
     Return list of accounts that user_id follows.
     Each dict has: id, username, name, description.
     """
-    cmd = [_bird_cmd(), "following", "--user", user_id,
+    cmd = _bird_base_args() + ["following", "--user", user_id,
            "-n", str(min(max_count, 200)), "--json"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True,
@@ -190,7 +197,7 @@ def _fetch_tweets_search(handle: str, count: int) -> list:
     """Fallback: fetch tweets via bird search 'from:handle'."""
     try:
         result = subprocess.run(
-            [_bird_cmd(), "search", f"from:{handle}", "-n", str(count), "--json", "--plain"],
+            _bird_base_args() + ["search", f"from:{handle}", "-n", str(count), "--json", "--plain"],
             capture_output=True,
             text=True,
             timeout=60,
