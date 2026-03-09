@@ -64,7 +64,7 @@ def _ingest_tweets(store, handle: str, tweets: list, all_tweets: list):
 def deep_backfill_experts(store, extractor, handles: list, months_back: int = 3):
     """
     Deep-scrape handles using cursor pagination going back `months_back` months.
-    Then opens and evaluates paper trades. Also saves author_ids for discovery.
+    Also saves author_ids for discovery.
     """
     logger.info("Deep backfill: %d expert(s), %d months back", len(handles), months_back)
     all_tweets = []
@@ -157,10 +157,9 @@ def backfill_experts(store, scraper, extractor, handles: list = None):
         return
     logger.info("Backfilling %d expert(s) with %d scroll rounds each...",
                 len(targets), _BACKFILL_SCROLL_ROUNDS)
-    all_tweets = []
     for handle in targets:
         tweets = scraper.scrape_handle(handle, scroll_rounds=_BACKFILL_SCROLL_ROUNDS)
-        _ingest_tweets(store, handle, tweets, all_tweets)
+        _ingest_tweets(store, handle, tweets, [])
         logger.info("Backfilled @%s: %d tweets", handle, len(tweets))
     count = extractor.run()
     logger.info("Extracted %d signals from backfill", count)
@@ -178,9 +177,8 @@ def scrape_top_experts(store, scraper, extractor, discovery, cfg, top_n: int = 5
         logger.debug("Fast-poll: no qualified experts yet, skipping")
         return
     logger.info("Fast-poll: scraping top %d experts: %s", len(qualified), qualified)
-    all_tweets = []
     for handle, tweets in scraper.scrape_all(qualified).items():
-        _ingest_tweets(store, handle, tweets, all_tweets)
+        _ingest_tweets(store, handle, tweets, [])
     count = extractor.run()
     if count:
         logger.info("Fast-poll extracted %d signals", count)
