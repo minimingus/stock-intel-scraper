@@ -242,6 +242,22 @@ class TwitterIntelStore:
         """, (f"-{lookback_hours} hours",)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_hype_mentions(self, lookback_hours: int = 48) -> list[dict]:
+        """Return one row per (ticker, handle) for bullish signals in the window."""
+        cur = self.conn.execute(
+            """
+            SELECT s.ticker, t.handle, t.tweet_time
+            FROM signals s
+            JOIN tweets t ON s.tweet_id = t.tweet_id
+            WHERE s.sentiment = 'bullish'
+              AND REPLACE(REPLACE(t.tweet_time, 'T', ' '), '+00:00', '') >= datetime('now', ? || ' hours')
+            ORDER BY t.tweet_time DESC
+            """,
+            (f"-{lookback_hours}",),
+        )
+        cols = [c[0] for c in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
     def get_new_signal_trades(self) -> list:
         """Return bullish stock signals that have no paper trade opened yet."""
         rows = self.conn.execute("""

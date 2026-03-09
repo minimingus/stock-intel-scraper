@@ -73,3 +73,27 @@ def test_get_tweet_count_24h(store):
     store.upsert_expert("a")
     store.insert_tweet("t1", "a", "recent", 0, 0)
     assert store.get_tweet_count_24h() == 1
+
+
+def test_get_hype_mentions_returns_bullish_within_window():
+    from datetime import datetime, timezone, timedelta
+    store = TwitterIntelStore(":memory:")
+    store.upsert_expert("alice")
+    store.upsert_expert("bob")
+
+    past = (datetime.now(timezone.utc) - timedelta(hours=10)).isoformat()
+    old  = (datetime.now(timezone.utc) - timedelta(hours=60)).isoformat()
+
+    store.insert_tweet("t1", "alice", "bullish on $TSLA", 0, 0, tweet_time=past)
+    store.insert_tweet("t2", "bob",   "love $TSLA here",  0, 0, tweet_time=past)
+    store.insert_tweet("t3", "alice", "old $TSLA call",   0, 0, tweet_time=old)
+
+    store.insert_signal("t1", "TSLA", "stock", "bullish")
+    store.insert_signal("t2", "TSLA", "stock", "bullish")
+    store.insert_signal("t3", "TSLA", "stock", "bullish")  # outside window
+
+    rows = store.get_hype_mentions(lookback_hours=48)
+    assert len(rows) == 2
+    handles = {r["handle"] for r in rows}
+    assert handles == {"alice", "bob"}
+    assert all(r["ticker"] == "TSLA" for r in rows)
