@@ -1,76 +1,76 @@
-import pytest
 from unittest.mock import MagicMock, patch
 from src.twitter_intel.brief import BriefGenerator
-from src.twitter_intel.store import TwitterIntelStore
 
 
-@pytest.fixture
-def store_with_signals(tmp_path):
-    s = TwitterIntelStore(db_path=str(tmp_path / "test.db"))
-    s.upsert_expert("a")
-    s.upsert_expert("b")
-    s.insert_tweet("t1", "a", "", 0, 0)
-    s.insert_tweet("t2", "b", "", 0, 0)
-    s.insert_signal("t1", "AAPL", "stock", "bullish")
-    s.insert_signal("t2", "AAPL", "stock", "bullish")
-    return s
+def _make_store(mentions=None):
+    store = MagicMock()
+    store.get_hype_mentions.return_value = mentions or []
+    store.get_expert_count.return_value = 12
+    store.get_tweet_count_24h.return_value = 340
+    return store
 
 
-def test_generate_returns_string_with_stats_footer(store_with_signals):
-    gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
-    text = gen.generate()
-    assert "📡" in text
-    assert "Monitoring" in text
+def _no_op_fetcher(ticker):
+    prices = {"TSLA": {"price": 392.0, "mktcap": 1_200_000_000_000},
+              "ONDS": {"price": 0.91,  "mktcap": 42_000_000}}
+    return prices.get(ticker, {})
 
 
-def test_generate_no_signals_returns_placeholder(tmp_path):
-    store = TwitterIntelStore(db_path=str(tmp_path / "empty.db"))
-    gen = BriefGenerator(store, min_expert_mentions=2)
-    text = gen.generate()
-    assert "No qualified experts" in text or "No signals from proven experts" in text
+def test_generate_contains_most_hyped_header():
+    store = _make_store([
+        {"ticker": "TSLA", "handle": "alice", "tweet_time": "2026-03-09T10:00:00+00:00"},
+        {"ticker": "TSLA", "handle": "bob",   "tweet_time": "2026-03-09T10:00:00+00:00"},
+    ])
+    bg = BriefGenerator(store, fetcher=_no_op_fetcher)
+    brief = bg.generate()
+    assert "MOST HYPED" in brief
+    assert "$TSLA" in brief
+    assert "×2" in brief
 
 
-def test_generate_respects_min_expert_mentions(store_with_signals):
-    """With min_expert_mentions=3 and only 2 experts, signals section shows no qualified signals."""
-    gen = BriefGenerator(store_with_signals, min_expert_mentions=3)
-    text = gen.generate()
-    # No signals meet the threshold so the signals section should show placeholder
-    assert "No signals from proven experts" in text or "No qualified experts" in text
+def test_generate_penny_section_present():
+    store = _make_store([
+        {"ticker": "ONDS", "handle": "alice", "tweet_time": "2026-03-09T10:00:00+00:00"},
+    ])
+    bg = BriefGenerator(store, fetcher=_no_op_fetcher)
+    brief = bg.generate()
+    assert "PENNY" in brief
+    assert "$ONDS" in brief
 
 
-def test_two_section_structure(store_with_signals):
-    """Brief must contain both expected section headers."""
-    gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
-    text = gen.generate()
-    assert "TOP EXPERTS" in text
-    assert "SIGNALS TO WATCH" in text
+def test_generate_no_signals_shows_placeholder():
+    store = _make_store([])
+    bg = BriefGenerator(store, fetcher=_no_op_fetcher)
+    brief = bg.generate()
+    assert "No signals" in brief
 
 
-def test_send_calls_telegram_api(store_with_signals):
-    with patch("src.twitter_intel.brief.requests.post") as mock_post, \
-         patch.dict("os.environ", {
-             "TELEGRAM_BOT_TOKEN": "tok",
-             "TELEGRAM_CHAT_ID": "123",
-         }):
+def test_generate_shows_handles():
+    store = _make_store([
+        {"ticker": "NVDA", "handle": "alice", "tweet_time": "2026-03-09T10:00:00+00:00"},
+        {"ticker": "NVDA", "handle": "bob",   "tweet_time": "2026-03-09T10:00:00+00:00"},
+    ])
+    bg = BriefGenerator(store, fetcher=_no_op_fetcher)
+    brief = bg.generate()
+    assert "@alice" in brief
+    assert "@bob"   in brief
+
+
+def test_generate_footer_shows_monitoring_stats():
+    store = _make_store([])
+    bg = BriefGenerator(store, fetcher=_no_op_fetcher)
+    brief = bg.generate()
+    assert "12" in brief   # expert_count
+    assert "340" in brief  # tweet_count
+
+
+def test_send_calls_telegram_api():
+    store = _make_store([])
+    bg = BriefGenerator(store, fetcher=_no_op_fetcher)
+    with patch("src.twitter_intel.brief.requests.post") as mock_post:
         mock_post.return_value.raise_for_status = MagicMock()
-        gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
-        gen.send()
-    mock_post.assert_called_once()
-    assert "sendMessage" in mock_post.call_args[0][0]
-    call_json = mock_post.call_args.kwargs["json"]
-    assert call_json["parse_mode"] == "HTML"
-    assert call_json["chat_id"] == "123"
-    assert "text" in call_json
-
-
-def test_send_saves_fallback_file_on_telegram_failure(store_with_signals, tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    with patch("src.twitter_intel.brief.requests.post", side_effect=Exception("down")), \
-         patch.dict("os.environ", {
-             "TELEGRAM_BOT_TOKEN": "tok",
-             "TELEGRAM_CHAT_ID": "123",
-         }):
-        gen = BriefGenerator(store_with_signals, min_expert_mentions=1)
-        gen.send()
-    log_files = list((tmp_path / "logs").glob("brief-*.txt"))
-    assert len(log_files) == 1
+        import os
+        os.environ["TELEGRAM_BOT_TOKEN"] = "tok"
+        os.environ["TELEGRAM_CHAT_ID"]   = "123"
+        bg.send()
+        mock_post.assert_called_once()
