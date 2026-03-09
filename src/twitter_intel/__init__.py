@@ -4,7 +4,6 @@ from .extractor import SignalExtractor
 from .discovery import ExpertDiscovery
 from .brief import BriefGenerator
 from .scorer import ExpertScorer
-from . import paper_trader
 from . import market_context
 
 __all__ = [
@@ -14,6 +13,5 @@ __all__ = [
     "ExpertDiscovery",
     "BriefGenerator",
     "ExpertScorer",
-    "paper_trader",
     "market_context",
 ]

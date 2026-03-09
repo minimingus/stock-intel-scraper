@@ -11,7 +11,6 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from .brief import BriefGenerator
 from .discovery import ExpertDiscovery
 from .extractor import SignalExtractor
-from . import paper_trader
 from .scraper import TwitterScraper, deep_scrape_handle, get_following
 from .scorer import ExpertScorer
 from .store import TwitterIntelStore
@@ -84,10 +83,6 @@ def deep_backfill_experts(store, extractor, handles: list, months_back: int = 3)
 
     count = extractor.run()
     logger.info("Extracted %d signals from deep backfill", count)
-    opened = paper_trader.open_trades_for_new_signals(store)
-    logger.info("Opened %d paper trades from deep backfill", opened)
-    closed = paper_trader.evaluate_open_trades(store)
-    logger.info("Closed %d paper trades", closed)
 
 
 def prune_underperforming_experts(store, min_trades: int = 10,
@@ -169,10 +164,6 @@ def backfill_experts(store, scraper, extractor, handles: list = None):
         logger.info("Backfilled @%s: %d tweets", handle, len(tweets))
     count = extractor.run()
     logger.info("Extracted %d signals from backfill", count)
-    opened = paper_trader.open_trades_for_new_signals(store)
-    logger.info("Opened %d paper trades from backfill", opened)
-    closed = paper_trader.evaluate_open_trades(store)
-    logger.info("Closed %d paper trades", closed)
 
 
 def scrape_top_experts(store, scraper, extractor, discovery, cfg, top_n: int = 5):
@@ -193,9 +184,6 @@ def scrape_top_experts(store, scraper, extractor, discovery, cfg, top_n: int = 5
     count = extractor.run()
     if count:
         logger.info("Fast-poll extracted %d signals", count)
-    opened = paper_trader.open_trades_for_new_signals(store)
-    if opened:
-        logger.info("Fast-poll opened %d paper trades", opened)
 
 
 def scrape_and_extract(store, scraper, extractor, discovery, cfg):
@@ -209,12 +197,6 @@ def scrape_and_extract(store, scraper, extractor, discovery, cfg):
 
     count = extractor.run()
     logger.info("Extracted %d signals", count)
-    opened = paper_trader.open_trades_for_new_signals(store)
-    if opened:
-        logger.info("Opened %d paper trades", opened)
-    closed = paper_trader.evaluate_open_trades(store)
-    if closed:
-        logger.info("Closed %d paper trades", closed)
 
     if cfg.get("twitter_intel", {}).get("auto_expand", {}).get("enabled", True):
         added = discovery.run(all_tweets)
