@@ -35,7 +35,7 @@ def _build_brief(
         for item in pennies:
             price  = item.get("price")
             mktcap = item.get("mktcap")
-            price_str  = f"${price:.2f}" if price else "?"
+            price_str  = f"${price:.2f}" if price is not None else "?"
             mktcap_str = f"cap ${mktcap // 1_000_000}M" if mktcap else ""
             lines.append(f"${item['ticker']}  ×{item['count']}  {price_str}  {mktcap_str}")
     else:
