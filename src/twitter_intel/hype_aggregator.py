@@ -43,10 +43,48 @@ def aggregate_hype(mentions: list[dict]) -> list[dict]:
 
 def _default_fetcher(ticker: str) -> dict:
     try:
-        info = yf.Ticker(ticker).info
+        tk   = yf.Ticker(ticker)
+        info = tk.info
+
         price  = info.get("currentPrice") or info.get("regularMarketPrice") or 0.0
         mktcap = info.get("marketCap") or 0
-        return {"price": float(price), "mktcap": int(mktcap)}
+
+        # Pre-market vs prior close
+        premarket_pct: float | None = None
+        pm_price  = info.get("preMarketPrice")
+        prev_close = info.get("regularMarketPreviousClose") or info.get("previousClose")
+        if pm_price and prev_close:
+            premarket_pct = (pm_price - prev_close) / prev_close * 100
+
+        # Intraday: 12h change, momentum, volume ratio
+        change_12h_pct: float | None = None
+        momentum:       str   | None = None
+        volume_ratio:   float | None = None
+
+        hist = tk.history(period="2d", interval="1h")
+        if not hist.empty and len(hist) >= 2:
+            lookback   = min(12, len(hist) - 1)
+            price_now  = float(hist["Close"].iloc[-1])
+            price_back = float(hist["Close"].iloc[-(lookback + 1)])
+            if price_back > 0:
+                change_12h_pct = (price_now - price_back) / price_back * 100
+
+            n        = min(3, len(hist))
+            momentum = "↑" if hist["Close"].iloc[-1] > hist["Close"].iloc[-n] else "↓"
+
+            avg_vol   = info.get("averageVolume") or info.get("averageDailyVolume10Day")
+            today_vol = float(hist["Volume"].iloc[-12:].sum())
+            if avg_vol and avg_vol > 0:
+                volume_ratio = today_vol / avg_vol
+
+        return {
+            "price":         float(price),
+            "mktcap":        int(mktcap),
+            "change_12h_pct": change_12h_pct,
+            "momentum":      momentum,
+            "volume_ratio":  volume_ratio,
+            "premarket_pct": premarket_pct,
+        }
     except Exception:
         return {}
 
@@ -70,7 +108,15 @@ def filter_penny_pumps(
         price  = info.get("price",  None)
         mktcap = info.get("mktcap", None)
 
-        enriched = {**item, "price": price, "mktcap": mktcap}
+        enriched = {
+            **item,
+            "price":          price,
+            "mktcap":         mktcap,
+            "change_12h_pct": info.get("change_12h_pct"),
+            "momentum":       info.get("momentum"),
+            "volume_ratio":   info.get("volume_ratio"),
+            "premarket_pct":  info.get("premarket_pct"),
+        }
 
         if (
             price  is not None and price  < _PENNY_MAX_PRICE

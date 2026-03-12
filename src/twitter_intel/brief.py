@@ -49,7 +49,16 @@ def _build_brief(
                     time_str = f"  🕐 {dt.astimezone(_il).strftime('%H:%M IL')}"
                 except Exception:
                     pass
-            lines.append(f"${item['ticker']}  ×{item['count']}  {price_str}  {mktcap_str}{time_str}")
+            c12    = item.get("change_12h_pct")
+            mom    = item.get("momentum") or ""
+            volr   = item.get("volume_ratio")
+            pm     = item.get("premarket_pct")
+
+            c12_str = f"  {'+' if c12 >= 0 else ''}{c12:.1f}%/12h {mom}" if c12 is not None else ""
+            vol_str = f"  vol×{volr:.1f}" if volr is not None else ""
+            pm_str  = f"  pre:{'+' if pm >= 0 else ''}{pm:.1f}%" if pm is not None else ""
+
+            lines.append(f"${item['ticker']}  ×{item['count']}  {price_str}  {mktcap_str}{time_str}{c12_str}{vol_str}{pm_str}")
     else:
         lines.append("<i>No penny activity.</i>")
 
