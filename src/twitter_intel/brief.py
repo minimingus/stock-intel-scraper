@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -31,13 +32,24 @@ def _build_brief(
 
     lines += ["", "🎰 <b>PENNY PUMP WATCH</b>", "━" * 20]
 
+    _il = ZoneInfo("Asia/Jerusalem")
     if pennies:
         for item in pennies:
             price  = item.get("price")
             mktcap = item.get("mktcap")
             price_str  = f"${price:.2f}" if price is not None else "?"
             mktcap_str = f"cap ${mktcap // 1_000_000}M" if mktcap else ""
-            lines.append(f"${item['ticker']}  ×{item['count']}  {price_str}  {mktcap_str}")
+            time_str = ""
+            raw_t = item.get("latest_time")
+            if raw_t:
+                try:
+                    dt = datetime.fromisoformat(raw_t.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    time_str = f"  🕐 {dt.astimezone(_il).strftime('%H:%M IL')}"
+                except Exception:
+                    pass
+            lines.append(f"${item['ticker']}  ×{item['count']}  {price_str}  {mktcap_str}{time_str}")
     else:
         lines.append("<i>No penny activity.</i>")
 

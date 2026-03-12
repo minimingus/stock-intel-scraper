@@ -14,16 +14,27 @@ def aggregate_hype(mentions: list[dict]) -> list[dict]:
     """
     Collapse raw mention rows into per-ticker counts.
     Each handle is counted once per ticker (deduplication).
+    Tracks latest_time (most recent tweet_time) per ticker.
     Returns list sorted by count desc.
     """
-    seen: dict[str, set[str]] = {}  # ticker -> set of handles
+    seen: dict[str, set[str]] = {}       # ticker -> set of handles
+    latest: dict[str, str | None] = {}   # ticker -> most recent tweet_time
+
     for row in mentions:
         ticker = row["ticker"]
         handle = row["handle"]
+        t      = row.get("tweet_time")
         seen.setdefault(ticker, set()).add(handle)
+        if t and (ticker not in latest or t > latest[ticker]):
+            latest[ticker] = t
 
     result = [
-        {"ticker": ticker, "count": len(handles), "handles": sorted(handles)}
+        {
+            "ticker":      ticker,
+            "count":       len(handles),
+            "handles":     sorted(handles),
+            "latest_time": latest.get(ticker),
+        }
         for ticker, handles in seen.items()
     ]
     result.sort(key=lambda r: r["count"], reverse=True)
